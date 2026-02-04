@@ -173,6 +173,7 @@ figment = { features = ["env", "test", "toml"], workspace = true }
 ctor = { workspace = true }
 lazy_static = { workspace = true }
 const_format = { workspace = true }
+mockall = { workspace = true }
 rcgen = { workspace = true }
 carbide-macros = { path = "../macros" }
 carbide-sqlx-testing = { path = "../sqlx-testing", default-features = false }

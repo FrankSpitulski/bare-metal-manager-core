@@ -1,5 +1,5 @@
 /*
- * SPDX-FileCopyrightText: Copyright (c) 2021-2024 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-FileCopyrightText: Copyright (c) 2021-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
  * SPDX-License-Identifier: LicenseRef-NvidiaProprietary
  *
  * NVIDIA CORPORATION, its affiliates and licensors retain all intellectual
@@ -24,7 +24,6 @@ use ::rpc::protos::dns::{
     UpdateDomainRequest,
 };
 use ::rpc::protos::{measured_boot as measured_boot_pb, mlx_device as mlx_device_pb};
-use carbide_dpf::KubeImpl;
 use carbide_uuid::machine::{MachineId, MachineInterfaceId};
 use db::work_lock_manager::WorkLockManagerHandle;
 use db::{DatabaseError, DatabaseResult, WithTransaction};
@@ -39,6 +38,7 @@ use tonic::{Request, Response, Status, Streaming};
 
 use self::rpc::forge_server::Forge;
 use crate::cfg::file::CarbideConfig;
+use crate::dpf::DpfOperations;
 use crate::dynamic_settings::DynamicSettings;
 use crate::ethernet_virtualization::EthVirtData;
 use crate::ib::IBFabricManager;
@@ -69,7 +69,7 @@ pub struct Api {
     pub(crate) rms_client: Option<Arc<dyn RmsApi>>,
     pub(crate) nmxm_pool: Arc<dyn NmxmClientPool>,
     pub(crate) work_lock_manager_handle: WorkLockManagerHandle,
-    pub(crate) kube_client_provider: Arc<dyn KubeImpl>,
+    pub(crate) dpf_sdk: Option<Arc<dyn DpfOperations>>,
     pub(crate) machine_state_handler_enqueuer: Enqueuer<MachineStateControllerIO>,
 }
 

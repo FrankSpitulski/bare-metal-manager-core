@@ -8,6 +8,17 @@ authors.workspace = true
 [lib]
 name = "carbide_dpf"
 
+# Harness that exercises the DPF SDK using the same surface as Carbide API.
+# Used to validate provisioning flows against a real DPF operator without a full Carbide deployment.
+[[bin]]
+name = "carbide-dpf-api-harness"
+path = "src/bin/api_harness.rs"
+required-features = ["driver"]
+
+[features]
+default = []
+driver = ["dep:clap", "dep:tracing-subscriber", "dep:libredfish"]
+
 [dependencies]
 kube = { default-features = false, features = [
   "runtime",
@@ -21,15 +32,24 @@ serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 tokio = { workspace = true }
 thiserror = { workspace = true }
-tera = { workspace = true }
 eyre = { workspace = true }
 tracing = { workspace = true }
 uuid = { features = ["v4"], workspace = true }
 async-trait = { workspace = true }
+futures = { workspace = true }
+tokio-util = { workspace = true }
+tokio-stream = { workspace = true }
+rand = { workspace = true }
 
 carbide-uuid = { path = "../uuid", features = ["sqlx"] }
 
+# Optional dependencies for carbide-dpf-api-harness binary
+clap = { workspace = true, features = ["derive"], optional = true }
+tracing-subscriber = { workspace = true, features = ["env-filter"], optional = true }
+libredfish = { workspace = true, optional = true }
+
 [dev-dependencies]
+dashmap = { workspace = true }
 tower-test = { workspace = true }
 hyper = { features = ["client", "http1"], workspace = true }
 http = { workspace = true }

@@ -1,5 +1,5 @@
 /*
- * SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
  * SPDX-License-Identifier: LicenseRef-NvidiaProprietary
  *
  * NVIDIA CORPORATION, its affiliates and licensors retain all intellectual
@@ -483,10 +483,14 @@ pub(crate) async fn admin_force_delete_machine(
                 );
             }
 
-            api.kube_client_provider
-                .force_delete_machine(ip, &response.dpu_machine_ids)
-                .await
-                .map_err(CarbideError::DpfError)?;
+            if let Some(ref ops) = api.dpf_sdk
+                && !response.dpu_machine_ids.is_empty()
+            {
+                let node_name = carbide_dpf::dpu_node_name(&machine.id.to_string());
+                ops.force_delete_host(&node_name, &response.dpu_machine_ids)
+                    .await
+                    .map_err(CarbideError::DpfError)?;
+            }
         } else {
             tracing::warn!(
                 "Failed to unlock this host because Forge could not retrieve the BMC IP address for machine {}",
