@@ -1,0 +1,68 @@
+# Makefile for dpu-provisioning-crd
+# Automates generation of Rust types from NVIDIA DOCA Platform CRDs
+
+[config]
+default_to_workspace = false
+
+[env]
+DOCA_REPO_URL = "https://github.com/NVIDIA/doca-platform.git"
+DOCA_BRANCH = "v25.10.1"
+DOCA_CLONE_DIR = "${CARGO_MAKE_WORKING_DIRECTORY}/doca-platform"
+CRD_PATH = "${DOCA_CLONE_DIR}/deploy/charts/dpf-operator/templates/crds"
+SRC_DIR = "${CARGO_MAKE_WORKING_DIRECTORY}/src/crds"
+
+[tasks.check-kopium]
+description = "Check if kopium is installed"
+script = '''
+if ! command -v kopium &> /dev/null; then
+    echo "kopium not found. Installing..."
+    cargo install kopium
+else
+    echo "kopium is installed"
+fi
+'''
+
+[tasks.clone-doca]
+description = "Clone NVIDIA doca-platform repository"
+dependencies = ["check-kopium"]
+script = '''
+if [ -d "${DOCA_CLONE_DIR}" ]; then
+    echo "doca-platform already exists, skipping clone"
+else
+    echo "Cloning NVIDIA doca-platform repository..."
+    git clone --depth 1 --branch ${DOCA_BRANCH} ${DOCA_REPO_URL} "${DOCA_CLONE_DIR}"
+    echo "Repository cloned"
+fi
+'''
+
+[tasks.generate-all]
+description = "Generate all CRD types from NVIDIA DOCA Platform"
+dependencies = ["clone-doca"]
+script = '''
+for yaml in "${CRD_PATH}"/*.yaml; do
+    filename=$(basename "$yaml" .yaml)
+    # Extract CRD name: apiextensions.k8s.io_v1_customresourcedefinition_NAME.GROUP.yaml -> NAME
+    crd_name=$(echo "$filename" | sed 's/apiextensions.k8s.io_v1_customresourcedefinition_//' | cut -d. -f1)
+    output="${SRC_DIR}/${crd_name}_generated.rs"
+    echo "Generating ${crd_name}..."
+    kopium -f "$yaml" > "$output"
+done
+echo "All CRDs generated"
+'''
+
+[tasks.verify]
+description = "Verify that generated code compiles"
+dependencies = ["generate-all"]
+command = "cargo"
+args = ["check"]
+
+[tasks.generate]
+description = "Generate all CRD types and verify compilation"
+dependencies = ["generate-all", "verify"]
+
+[tasks.clean-generated]
+description = "Remove all generated files"
+script = '''
+rm -f "${SRC_DIR}"/*_generated.rs
+echo "Generated files removed"
+'''
