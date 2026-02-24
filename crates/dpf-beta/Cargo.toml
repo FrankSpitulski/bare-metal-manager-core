@@ -30,6 +30,7 @@ rustls = { workspace = true }
 k8s-openapi = { features = ["latest", "schemars"], workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
+strum_macros = { workspace = true }
 tokio = { workspace = true }
 thiserror = { workspace = true }
 eyre = { workspace = true }
@@ -54,6 +55,14 @@ tower-test = { workspace = true }
 hyper = { features = ["client", "http1"], workspace = true }
 http = { workspace = true }
 once_cell = { workspace = true }
+
+[build-dependencies]
+# requires this patch version for kopium. without this we have to specify a specific anyhow patch version in the main workspace.
+anyhow = "1.0.102"
+k8s-openapi = { workspace = true }
+# Keep kopium scoped to this crate's build.rs to avoid workspace-wide pinning impact.
+kopium = { git = "https://github.com/kube-rs/kopium", rev = "f2e69f0cbae446123ce11ac3a192d9940a56d434", default-features = false }
+serde_yaml = { workspace = true }
 
 [lints]
 workspace = true

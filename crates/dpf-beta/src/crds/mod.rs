@@ -10,42 +10,4 @@
  * its affiliates is strictly prohibited.
  */
 
-// Provisioning CRDs (provisioning.dpu.nvidia.com)
-pub mod bfbs_generated;
-pub mod dpuclusters_generated;
-pub mod dpudevices_generated;
-pub mod dpudiscoveries_generated;
-pub mod dpuflavors_generated;
-pub mod dpunodemaintenances_generated;
-pub mod dpunodes_generated;
-pub mod dpus_generated;
-pub mod dpusets_generated;
-
-// Service CRDs (svc.dpu.nvidia.com)
-pub mod dpudeployments_generated;
-pub mod dpuservicechains_generated;
-pub mod dpuserviceconfigurations_generated;
-pub mod dpuservicecredentialrequests_generated;
-pub mod dpuserviceinterfaces_generated;
-pub mod dpuserviceipams_generated;
-pub mod dpuservicenads_generated;
-pub mod dpuservices_generated;
-pub mod dpuservicetemplates_generated;
-pub mod servicechains_generated;
-pub mod servicechainsets_generated;
-pub mod serviceinterfaces_generated;
-pub mod serviceinterfacesets_generated;
-
-// Operator CRDs (operator.dpu.nvidia.com)
-pub mod dpfoperatorconfigs_generated;
-
-// Storage CRDs (storage.dpu.nvidia.com)
-pub mod dpustoragepolicies_generated;
-pub mod dpustoragevendors_generated;
-pub mod dpuvolumeattachments_generated;
-pub mod dpuvolumes_generated;
-
-// VPC CRDs (vpc.dpu.nvidia.com)
-pub mod dpuvirtualnetworks_generated;
-pub mod dpuvpcs_generated;
-pub mod isolationclasses_generated;
+include!(concat!(env!("OUT_DIR"), "/crds/mod.rs"));

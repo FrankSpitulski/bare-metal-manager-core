@@ -66,11 +66,13 @@ Other subcommands: `get-phase`, `force-delete-dpu`, `force-delete-node`, `delete
 
 ## Regenerating CRDs
 
-Rust CRD bindings are generated from the DPF operator CRD YAML (NVIDIA doca-platform repo) using [kopium](https://github.com/kube-rs/kopium):
+This crate commits CRD YAML files in `crates/dpf-beta/crds/`. Rust CRD bindings are generated at compile time by `build.rs` using [kopium](https://github.com/kube-rs/kopium) as a build dependency.
+
+To refresh committed YAML inputs from NVIDIA doca-platform and verify generation:
 
 ```bash
 cd crates/dpf-beta
 cargo make generate
 ```
 
-Requires `kopium` (`cargo install kopium`). The task clones the doca-platform repo, runs kopium on each CRD, and verifies the crate compiles.
+`cargo make generate` removes existing YAML files in `crds/`, copies the latest CRDs from the pinned doca-platform branch, and runs `cargo check` to validate `build.rs` generation.
