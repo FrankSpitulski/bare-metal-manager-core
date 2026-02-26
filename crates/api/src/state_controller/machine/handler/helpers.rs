@@ -22,7 +22,7 @@ use model::machine::{
     DpfState, DpuDiscoveringState, DpuDiscoveringStates, DpuInitNextStateResolver, DpuInitState,
     DpuInitStates, DpuReprovisionStates, HostReprovisionState, InstallDpuOsState,
     InstanceNextStateResolver, InstanceState, Machine, MachineNextStateResolver, MachineState,
-    ManagedHostState, ManagedHostStateSnapshot, ReprovisionState, ReprovisioningPhase,
+    ManagedHostState, ManagedHostStateSnapshot, ReprovisionState,
 };
 
 use crate::state_controller::state_handler::StateHandlerError;
@@ -33,13 +33,6 @@ pub trait NextState {
         current_state: &ManagedHostState,
         install_os_substate: &InstallDpuOsState,
         dpu_id: &MachineId,
-    ) -> Result<ManagedHostState, StateHandlerError>;
-
-    fn next_dpf_state(
-        &self,
-        current_state: &ManagedHostState,
-        dpu_id: &MachineId,
-        next_dpf_state: DpfState,
     ) -> Result<ManagedHostState, StateHandlerError>;
 
     fn next_state(
@@ -122,26 +115,28 @@ pub trait NextState {
                     all_machine_ids,
                 ),
             ReprovisionState::DpfStates { substate } => match substate {
-                DpfState::WaitForNetworkConfigAndRemoveAnnotation => {
-                    ReprovisionState::PoweringOffHost.next_state_with_all_dpus_updated(
+                DpfState::WaitingForReady { .. } => ReprovisionState::PoweringOffHost
+                    .next_state_with_all_dpus_updated(
                         &state.managed_state,
                         &state.dpu_snapshots,
                         all_machine_ids,
-                    )
-                }
-                DpfState::TriggerReprovisioning {
-                    phase: ReprovisioningPhase::WaitingForAllDpusUnderReprovisioningToBeDeleted,
-                } => ReprovisionState::DpfStates {
-                    substate: DpfState::UpdateNodeEffectAnnotation,
+                    ),
+                DpfState::Reprovisioning => ReprovisionState::DpfStates {
+                    substate: DpfState::Provisioning,
                 }
                 .next_state_with_all_dpus_updated(
                     &state.managed_state,
                     &state.dpu_snapshots,
                     all_machine_ids,
                 ),
-                _ => Err(StateHandlerError::InvalidState(format!(
-                    "Unhandled {substate:?} state for all dpu handling for reprovisioning."
-                ))),
+                DpfState::Provisioning => ReprovisionState::DpfStates {
+                    substate: DpfState::WaitingForReady { phase: None },
+                }
+                .next_state_with_all_dpus_updated(
+                    &state.managed_state,
+                    &state.dpu_snapshots,
+                    all_machine_ids,
+                ),
             },
             _ => Err(StateHandlerError::InvalidState(format!(
                 "Unhandled {current_reprovision_state} state for all dpu handling."
@@ -310,29 +305,6 @@ impl NextState for MachineNextStateResolver {
         }
     }
 
-    fn next_dpf_state(
-        &self,
-        current_state: &ManagedHostState,
-        dpu_id: &MachineId,
-        next_dpf_state: DpfState,
-    ) -> Result<ManagedHostState, StateHandlerError> {
-        match current_state {
-            ManagedHostState::DPUReprovision { dpu_states } => {
-                let mut states = dpu_states.states.clone();
-                let next_state = ReprovisionState::DpfStates {
-                    substate: next_dpf_state,
-                };
-                states.insert(*dpu_id, next_state);
-                Ok(ManagedHostState::DPUReprovision {
-                    dpu_states: DpuReprovisionStates { states },
-                })
-            }
-            _ => Err(StateHandlerError::InvalidState(format!(
-                "Unhandled {current_state} state for Non-Instance handling for dpf handling."
-            ))),
-        }
-    }
-
     fn next_bfb_install_state(
         &self,
         current_state: &ManagedHostState,
@@ -425,33 +397,6 @@ impl NextState for InstanceNextStateResolver {
         }
     }
 
-    fn next_dpf_state(
-        &self,
-        current_state: &ManagedHostState,
-        dpu_id: &MachineId,
-        next_dpf_state: DpfState,
-    ) -> Result<ManagedHostState, StateHandlerError> {
-        match current_state {
-            ManagedHostState::Assigned {
-                instance_state: InstanceState::DPUReprovision { dpu_states },
-            } => {
-                let mut states = dpu_states.states.clone();
-                let next_state = ReprovisionState::DpfStates {
-                    substate: next_dpf_state,
-                };
-                states.insert(*dpu_id, next_state);
-                Ok(ManagedHostState::Assigned {
-                    instance_state: InstanceState::DPUReprovision {
-                        dpu_states: DpuReprovisionStates { states },
-                    },
-                })
-            }
-            _ => Err(StateHandlerError::InvalidState(format!(
-                "Unhandled {current_state} state for Non-Instance handling for dpf handling."
-            ))),
-        }
-    }
-
     fn next_bfb_install_state(
         &self,
         current_state: &ManagedHostState,
@@ -517,29 +462,6 @@ impl NextState for DpuInitNextStateResolver {
                 substate: install_os_substate.clone(),
             }
             .next_state(current_state, dpu_id)?),
-        }
-    }
-
-    fn next_dpf_state(
-        &self,
-        current_state: &ManagedHostState,
-        dpu_id: &MachineId,
-        next_dpf_state: DpfState,
-    ) -> Result<ManagedHostState, StateHandlerError> {
-        match current_state {
-            ManagedHostState::DPUInit { dpu_states } => {
-                let mut states = dpu_states.states.clone();
-                let next_state = DpuInitState::DpfStates {
-                    state: next_dpf_state,
-                };
-                states.insert(*dpu_id, next_state);
-                Ok(ManagedHostState::DPUInit {
-                    dpu_states: DpuInitStates { states },
-                })
-            }
-            _ => Err(StateHandlerError::InvalidState(format!(
-                "Unhandled {current_state} state for Non-Instance handling for dpf handling."
-            ))),
         }
     }
 }
