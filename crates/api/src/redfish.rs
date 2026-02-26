@@ -24,8 +24,9 @@ use async_trait::async_trait;
 use chrono::Utc;
 use forge_secrets::SecretsError;
 use forge_secrets::credentials::{
-    BmcCredentialType, CredentialKey, CredentialProvider, CredentialType, Credentials,
+    BmcCredentialType, CredentialKey, CredentialManager, CredentialType, Credentials,
 };
+use forge_secrets::static_credentials::{StaticCredentialKey, StaticCredentialReader};
 use libredfish::model::BootProgress;
 use libredfish::{Endpoint, PowerState, Redfish, RedfishError, SystemPowerControl};
 use mac_address::MacAddress;
@@ -93,8 +94,7 @@ pub trait RedfishClientPool: Send + Sync + 'static {
         initialize: bool, // fetch some initial values like system id and manager id
     ) -> Result<Box<dyn Redfish>, RedfishClientCreationError>;
 
-    /// Returns a CredentialProvider for use in setting credentials in the UEFI/BMC.
-    fn credential_provider(&self) -> Arc<dyn CredentialProvider>;
+    fn static_credential_reader(&self) -> Arc<dyn StaticCredentialReader>;
 
     // MARK: - Default (helper) methods
 
@@ -154,16 +154,16 @@ pub trait RedfishClientPool: Send + Sync + 'static {
         &self,
         client: &dyn Redfish,
     ) -> Result<Option<String>, RedfishClientCreationError> {
-        let credential_key = CredentialKey::HostUefi {
+        let static_key = StaticCredentialKey::HostUefi {
             credential_type: CredentialType::SiteDefault,
         };
 
         let credentials = self
-            .credential_provider()
-            .get_credentials(&credential_key)
+            .static_credential_reader()
+            .get_credentials(&static_key)
             .await?
             .ok_or_else(|| RedfishClientCreationError::MissingCredentials {
-                key: credential_key.to_key_str().to_string(),
+                key: "host_uefi/site_default".to_string(),
             })?;
 
         let (_, current_password) = match credentials {
@@ -229,8 +229,8 @@ pub trait RedfishClientPool: Send + Sync + 'static {
             // site password is taken from DpuUefi:site_default key
             //
             let credentials = self
-                .credential_provider()
-                .get_credentials(&CredentialKey::DpuUefi {
+                .static_credential_reader()
+                .get_credentials(&StaticCredentialKey::DpuUefi {
                     credential_type: CredentialType::DpuHardwareDefault,
                 })
                 .await?
@@ -243,15 +243,14 @@ pub trait RedfishClientPool: Send + Sync + 'static {
                 Credentials::UsernamePassword { username, password } => (username, password),
             };
 
-            let credential_key = CredentialKey::DpuUefi {
-                credential_type: CredentialType::SiteDefault,
-            };
             let credentials = self
-                .credential_provider()
-                .get_credentials(&credential_key)
+                .static_credential_reader()
+                .get_credentials(&StaticCredentialKey::DpuUefi {
+                    credential_type: CredentialType::SiteDefault,
+                })
                 .await?
                 .ok_or_else(|| RedfishClientCreationError::MissingCredentials {
-                    key: credential_key.to_key_str().to_string(),
+                    key: "dpu_uefi/site_default".to_string(),
                 })?;
 
             (_, new_password) = match credentials {
@@ -259,15 +258,14 @@ pub trait RedfishClientPool: Send + Sync + 'static {
             };
         } else {
             // For hosts, first try with empty current password (assuming no password is set)
-            let credential_key = CredentialKey::HostUefi {
-                credential_type: CredentialType::SiteDefault,
-            };
             let credentials = self
-                .credential_provider()
-                .get_credentials(&credential_key)
+                .static_credential_reader()
+                .get_credentials(&StaticCredentialKey::HostUefi {
+                    credential_type: CredentialType::SiteDefault,
+                })
                 .await?
                 .ok_or_else(|| RedfishClientCreationError::MissingCredentials {
-                    key: credential_key.to_key_str().to_string(),
+                    key: "host_uefi/site_default".to_string(),
                 })?;
 
             (_, new_password) = match credentials {
@@ -306,18 +304,21 @@ pub trait RedfishClientPool: Send + Sync + 'static {
 
 pub struct RedfishClientPoolImpl {
     pool: libredfish::RedfishClientPool,
-    credential_provider: Arc<dyn CredentialProvider>,
+    credential_manager: Arc<dyn CredentialManager>,
+    static_credential_reader: Arc<dyn StaticCredentialReader>,
     proxy_address: Arc<ArcSwap<Option<HostPortPair>>>,
 }
 
 impl RedfishClientPoolImpl {
     pub fn new(
-        credential_provider: Arc<dyn CredentialProvider>,
+        credential_manager: Arc<dyn CredentialManager>,
+        static_credential_reader: Arc<dyn StaticCredentialReader>,
         pool: libredfish::RedfishClientPool,
         proxy_address: Arc<ArcSwap<Option<HostPortPair>>>,
     ) -> Self {
         RedfishClientPoolImpl {
-            credential_provider,
+            credential_manager,
+            static_credential_reader,
             pool,
             proxy_address,
         }
@@ -354,7 +355,7 @@ impl RedfishClientPool for RedfishClientPoolImpl {
             RedfishAuth::Direct(username, password) => (Some(username), Some(password)),
             RedfishAuth::Key(credential_key) => {
                 let credentials = self
-                    .credential_provider
+                    .credential_manager
                     .get_credentials(&credential_key)
                     .await?
                     .ok_or_else(|| RedfishClientCreationError::MissingCredentials {
@@ -409,8 +410,8 @@ impl RedfishClientPool for RedfishClientPoolImpl {
         }
     }
 
-    fn credential_provider(&self) -> Arc<dyn CredentialProvider> {
-        self.credential_provider.clone()
+    fn static_credential_reader(&self) -> Arc<dyn StaticCredentialReader> {
+        self.static_credential_reader.clone()
     }
 }
 
@@ -632,7 +633,7 @@ pub mod test_support {
     use std::time::Duration;
 
     use chrono::Utc;
-    use forge_secrets::credentials::TestCredentialProvider;
+    use forge_secrets::credentials::TestCredentialManager;
     use libredfish::model::certificate::Certificate;
     use libredfish::model::component_integrity::{ComponentIntegrities, ComponentIntegrity};
     use libredfish::model::oem::nvidia_dpu::{HostPrivilegeLevel, NicMode};
@@ -1955,8 +1956,18 @@ pub mod test_support {
             }))
         }
 
-        fn credential_provider(&self) -> Arc<dyn CredentialProvider> {
-            Arc::new(TestCredentialProvider::default())
+        fn static_credential_reader(&self) -> Arc<dyn StaticCredentialReader> {
+            let test_mgr: Arc<dyn forge_secrets::credentials::SecretPathReader> =
+                Arc::new(TestCredentialManager::default());
+            Arc::new(
+                forge_secrets::static_credentials::ChainedStaticCredentialProvider::new(vec![
+                    Box::new(
+                        forge_secrets::static_credentials::VaultBackedStaticCredentialReader::new(
+                            test_mgr,
+                        ),
+                    ),
+                ]),
+            )
         }
 
         async fn create_client_for_ingested_host(
@@ -2002,9 +2013,7 @@ mod tests {
             .create_client(
                 "localhost",
                 None,
-                RedfishAuth::Key(CredentialKey::HostRedfish {
-                    credential_type: CredentialType::SiteDefault,
-                }),
+                RedfishAuth::Direct("root".to_string(), "test".to_string()),
                 true,
             )
             .await
@@ -2021,9 +2030,7 @@ mod tests {
             .create_client(
                 "localhost",
                 None,
-                RedfishAuth::Key(CredentialKey::HostRedfish {
-                    credential_type: CredentialType::SiteDefault,
-                }),
+                RedfishAuth::Direct("root".to_string(), "test".to_string()),
                 true,
             )
             .await

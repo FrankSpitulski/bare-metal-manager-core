@@ -12,7 +12,7 @@
 
 use carbide_uuid::dpa_interface::DpaInterfaceId;
 use forge_secrets::credentials::{
-    BmcCredentialType, CredentialKey, CredentialProvider, Credentials,
+    BmcCredentialType, CredentialKey, CredentialManager, Credentials,
 };
 use hkdf::Hkdf;
 use sha2::Sha256;
@@ -128,12 +128,12 @@ async fn build_kdf_context(
 // fetch_kdf_secret fetches the site-wide root secret from Vault,
 // which is the IKM (Input Key Material) for the KDF.
 async fn fetch_kdf_secret(
-    credential_provider: &dyn CredentialProvider,
+    credential_manager: &dyn CredentialManager,
 ) -> Result<String, eyre::Report> {
     let credential_key = CredentialKey::BmcCredentials {
         credential_type: BmcCredentialType::SiteWideRoot,
     };
-    let credentials = credential_provider
+    let credentials = credential_manager
         .get_credentials(&credential_key)
         .await?
         .ok_or_else(|| eyre::eyre!("SiteWideRoot credentials not found"))?;
@@ -147,10 +147,10 @@ async fn fetch_kdf_secret(
 pub async fn build_supernic_lockdown_key(
     db_reader: &PgPool,
     dpa_interface_id: DpaInterfaceId,
-    credential_provider: &dyn CredentialProvider,
+    credential_manager: &dyn CredentialManager,
 ) -> Result<String, eyre::Report> {
     let ctx = build_kdf_context(db_reader, dpa_interface_id).await?;
-    let secret = fetch_kdf_secret(credential_provider).await?;
+    let secret = fetch_kdf_secret(credential_manager).await?;
     build_lockdown_key(secret.as_bytes(), &ctx, KdfContextVersion::V1)
 }
 

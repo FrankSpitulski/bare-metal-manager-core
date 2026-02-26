@@ -19,7 +19,8 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use forge_secrets::credentials::{CredentialKey, CredentialProvider, Credentials};
+use forge_secrets::credentials::Credentials;
+use forge_secrets::static_credentials::{StaticCredentialKey, StaticCredentialReader};
 pub use model::ib::{IBMtu, IBRateLimit, IBServiceLevel};
 
 #[cfg(test)]
@@ -48,7 +49,7 @@ pub enum IBFabricManagerType {
 
 pub struct IBFabricManagerImpl {
     config: IBFabricManagerConfig,
-    credential_provider: Arc<dyn CredentialProvider>,
+    static_credential_reader: Arc<dyn StaticCredentialReader>,
     #[cfg(test)]
     mock_fabric: Arc<mock::MockIBFabric>,
     disable_fabric: Arc<dyn IBFabric>,
@@ -93,7 +94,7 @@ impl Default for IBFabricManagerConfig {
 }
 
 pub fn create_ib_fabric_manager(
-    credential_provider: Arc<dyn CredentialProvider>,
+    static_credential_reader: Arc<dyn StaticCredentialReader>,
     config: IBFabricManagerConfig,
 ) -> Result<IBFabricManagerImpl, eyre::Report> {
     for (fabric_id, endpoints) in config.endpoints.iter() {
@@ -118,7 +119,7 @@ pub fn create_ib_fabric_manager(
     let disable_fabric = Arc::new(disable::DisableIBFabric {});
 
     Ok(IBFabricManagerImpl {
-        credential_provider,
+        static_credential_reader,
         config,
         #[cfg(test)]
         mock_fabric,
@@ -148,12 +149,12 @@ impl IBFabricManager for IBFabricManagerImpl {
                         id: fabric_name.to_string(),
                     })?;
 
-                let key = &CredentialKey::UfmAuth {
+                let key = StaticCredentialKey::UfmAuth {
                     fabric: fabric_name.to_string(),
                 };
                 let credentials = self
-                    .credential_provider
-                    .get_credentials(key)
+                    .static_credential_reader
+                    .get_credentials(&key)
                     .await
                     .map_err(|err| {
                         CarbideError::internal(format!(
@@ -161,10 +162,9 @@ impl IBFabricManager for IBFabricManagerImpl {
                         ))
                     })?
                     .ok_or_else(|| {
-                        CarbideError::internal(format!(
-                            "Cannot create UFM client: vault key not found or token is not set: {}",
-                            key.to_key_str()
-                        ))
+                        CarbideError::internal(
+                            "Cannot create UFM client: UFM credentials not configured".to_string(),
+                        )
                     })?;
 
                 let (_deprecated_address, token) = match credentials {

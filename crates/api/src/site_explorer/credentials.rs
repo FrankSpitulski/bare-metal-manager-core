@@ -18,8 +18,9 @@
 use std::sync::Arc;
 
 use forge_secrets::credentials::{
-    BmcCredentialType, CredentialKey, CredentialProvider, CredentialType, Credentials,
+    BmcCredentialType, CredentialKey, CredentialManager, CredentialType, Credentials,
 };
+use forge_secrets::static_credentials::{StaticCredentialKey, StaticCredentialReader};
 use mac_address::MacAddress;
 use model::site_explorer::EndpointExplorationError;
 
@@ -40,7 +41,8 @@ pub fn get_bmc_nvos_admin_credential_key(bmc_mac_address: MacAddress) -> Credent
 }
 
 pub struct CredentialClient {
-    credential_provider: Arc<dyn CredentialProvider>,
+    credential_manager: Arc<dyn CredentialManager>,
+    static_credential_reader: Arc<dyn StaticCredentialReader>,
 }
 
 impl CredentialClient {
@@ -64,7 +66,7 @@ impl CredentialClient {
         credential_key: &CredentialKey,
     ) -> Result<Credentials, EndpointExplorationError> {
         match self
-            .credential_provider
+            .credential_manager
             .get_credentials(credential_key)
             .await
         {
@@ -96,7 +98,7 @@ impl CredentialClient {
         credentials: &Credentials,
     ) -> Result<(), EndpointExplorationError> {
         match self
-            .credential_provider
+            .credential_manager
             .set_credentials(credential_key, credentials)
             .await
         {
@@ -108,9 +110,13 @@ impl CredentialClient {
         }
     }
 
-    pub fn new(credential_provider: Arc<dyn CredentialProvider>) -> Self {
+    pub fn new(
+        credential_manager: Arc<dyn CredentialManager>,
+        static_credential_reader: Arc<dyn StaticCredentialReader>,
+    ) -> Self {
         Self {
-            credential_provider,
+            credential_manager,
+            static_credential_reader,
         }
     }
 
@@ -130,29 +136,59 @@ impl CredentialClient {
         }
 
         // Site wide DPU UEFI credentials
-        let credential_key = CredentialKey::DpuUefi {
+        let static_key = StaticCredentialKey::DpuUefi {
             credential_type: CredentialType::SiteDefault,
         };
-        if let Some(e) = self.get_credentials(&credential_key).await.err() {
-            let credential_key_str = credential_key.to_key_str();
-            metrics.increment_credential_missing(&credential_key_str);
-            return Err(EndpointExplorationError::MissingCredentials {
-                key: credential_key.to_key_str().to_string(),
-                cause: e.to_string(),
-            });
+        match self
+            .static_credential_reader
+            .get_credentials(&static_key)
+            .await
+        {
+            Ok(Some(creds)) if Self::valid_password(&creds) => {}
+            Ok(_) => {
+                let key_str = static_key.to_string();
+                metrics.increment_credential_missing(&key_str);
+                return Err(EndpointExplorationError::MissingCredentials {
+                    key: key_str,
+                    cause: "DPU UEFI credentials not configured".to_string(),
+                });
+            }
+            Err(e) => {
+                let key_str = static_key.to_string();
+                metrics.increment_credential_missing(&key_str);
+                return Err(EndpointExplorationError::MissingCredentials {
+                    key: key_str,
+                    cause: e.to_string(),
+                });
+            }
         }
 
         // Site wide Host UEFI credentials
-        let credential_key = CredentialKey::HostUefi {
+        let static_key = StaticCredentialKey::HostUefi {
             credential_type: CredentialType::SiteDefault,
         };
-        if let Some(e) = self.get_credentials(&credential_key).await.err() {
-            let credential_key_str = credential_key.to_key_str();
-            metrics.increment_credential_missing(&credential_key_str);
-            return Err(EndpointExplorationError::MissingCredentials {
-                key: credential_key.to_key_str().to_string(),
-                cause: e.to_string(),
-            });
+        match self
+            .static_credential_reader
+            .get_credentials(&static_key)
+            .await
+        {
+            Ok(Some(creds)) if Self::valid_password(&creds) => {}
+            Ok(_) => {
+                let key_str = static_key.to_string();
+                metrics.increment_credential_missing(&key_str);
+                return Err(EndpointExplorationError::MissingCredentials {
+                    key: key_str,
+                    cause: "Host UEFI credentials not configured".to_string(),
+                });
+            }
+            Err(e) => {
+                let key_str = static_key.to_string();
+                metrics.increment_credential_missing(&key_str);
+                return Err(EndpointExplorationError::MissingCredentials {
+                    key: key_str,
+                    cause: e.to_string(),
+                });
+            }
         }
 
         Ok(())

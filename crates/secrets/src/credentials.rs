@@ -121,8 +121,17 @@ impl Credentials {
 }
 
 #[async_trait]
+/// Read credentials from a key-value store by raw path string.
+pub trait SecretPathReader: Send + Sync {
+    async fn get_credentials_by_path(
+        &self,
+        path: &str,
+    ) -> Result<Option<Credentials>, SecretsError>;
+}
+
+#[async_trait]
 /// Abstract over a credentials provider that functions as a kv map between "key" -> "cred"
-pub trait CredentialProvider: Send + Sync {
+pub trait CredentialManager: Send + Sync {
     async fn get_credentials(
         &self,
         key: &CredentialKey,
@@ -144,14 +153,14 @@ pub trait CredentialProvider: Send + Sync {
 }
 
 #[derive(Default)]
-pub struct TestCredentialProvider {
+pub struct TestCredentialManager {
     credentials: Mutex<HashMap<String, Credentials>>,
     fallback_credentials: Option<Credentials>,
     pub set_credentials_sleep_time_ms: AtomicU32,
 }
 
-impl TestCredentialProvider {
-    /// Construct a TestCredentialProvider which falls back on a default set of credentials if we
+impl TestCredentialManager {
+    /// Construct a TestCredentialManager which falls back on a default set of credentials if we
     /// can't find matching ones set via set_credentials()
     pub fn new(fallback_credentials: Credentials) -> Self {
         Self {
@@ -160,10 +169,32 @@ impl TestCredentialProvider {
             set_credentials_sleep_time_ms: Default::default(),
         }
     }
+
+    pub async fn set_credentials_by_path(
+        &self,
+        path: &str,
+        credentials: &Credentials,
+    ) -> Result<(), SecretsError> {
+        let mut data = self.credentials.lock().await;
+        data.insert(path.to_string(), credentials.clone());
+        Ok(())
+    }
 }
 
 #[async_trait]
-impl CredentialProvider for TestCredentialProvider {
+impl SecretPathReader for TestCredentialManager {
+    async fn get_credentials_by_path(
+        &self,
+        path: &str,
+    ) -> Result<Option<Credentials>, SecretsError> {
+        let credentials = self.credentials.lock().await;
+        let cred = credentials.get(path).or(self.fallback_credentials.as_ref());
+        Ok(cred.cloned())
+    }
+}
+
+#[async_trait]
+impl CredentialManager for TestCredentialManager {
     async fn get_credentials(
         &self,
         key: &CredentialKey,
@@ -245,14 +276,8 @@ pub enum BmcCredentialType {
 pub enum CredentialKey {
     DpuSsh { machine_id: MachineId },
     DpuHbn { machine_id: MachineId },
-    DpuRedfish { credential_type: CredentialType },
-    HostRedfish { credential_type: CredentialType },
-    UfmAuth { fabric: String },
-    DpuUefi { credential_type: CredentialType },
-    HostUefi { credential_type: CredentialType },
     BmcCredentials { credential_type: BmcCredentialType },
     ExtensionService { service_id: String, version: String },
-    NmxM { nmxm_id: String },
     RackFirmware { firmware_id: String },
     SwitchNvosAdmin { bmc_mac_address: MacAddress },
 }
@@ -266,52 +291,6 @@ impl CredentialKey {
             CredentialKey::DpuHbn { machine_id } => {
                 Cow::from(format!("machines/{machine_id}/dpu-hbn"))
             }
-            CredentialKey::DpuRedfish { credential_type } => match credential_type {
-                CredentialType::DpuHardwareDefault => {
-                    Cow::from("machines/all_dpus/factory_default/bmc-metadata-items/root")
-                }
-                CredentialType::SiteDefault => {
-                    Cow::from("machines/all_dpus/site_default/bmc-metadata-items/root")
-                }
-                CredentialType::HostHardwareDefault { .. } => {
-                    unreachable!(
-                        "DpuRedfish / HostHardwareDefault is an invalid credential combination"
-                    );
-                }
-            },
-            CredentialKey::HostRedfish { credential_type } => match credential_type {
-                CredentialType::HostHardwareDefault { vendor } => Cow::from(format!(
-                    "machines/all_hosts/factory_default/bmc-metadata-items/{vendor}"
-                )),
-                CredentialType::SiteDefault => {
-                    Cow::from("machines/all_hosts/site_default/bmc-metadata-items/root")
-                }
-                CredentialType::DpuHardwareDefault => {
-                    unreachable!(
-                        "HostRedfish / DpuHardwareDefault is an invalid credential combination"
-                    );
-                }
-            },
-            CredentialKey::UfmAuth { fabric } => Cow::from(format!("ufm/{fabric}/auth")),
-            CredentialKey::DpuUefi { credential_type } => match credential_type {
-                CredentialType::DpuHardwareDefault => {
-                    Cow::from("machines/all_dpus/factory_default/uefi-metadata-items/auth")
-                }
-                CredentialType::SiteDefault => {
-                    Cow::from("machines/all_dpus/site_default/uefi-metadata-items/auth")
-                }
-                _ => {
-                    panic!("Not supported credential key");
-                }
-            },
-            CredentialKey::HostUefi { credential_type } => match credential_type {
-                CredentialType::SiteDefault => {
-                    Cow::from("machines/all_hosts/site_default/uefi-metadata-items/auth")
-                }
-                _ => {
-                    panic!("Not supported credential key");
-                }
-            },
             CredentialKey::BmcCredentials { credential_type } => match credential_type {
                 BmcCredentialType::SiteWideRoot => Cow::from("machines/bmc/site/root"),
                 BmcCredentialType::BmcRoot { bmc_mac_address } => {
@@ -327,7 +306,6 @@ impl CredentialKey {
             } => Cow::from(format!(
                 "machines/extension-services/{service_id}/versions/{version}/credential"
             )),
-            CredentialKey::NmxM { nmxm_id } => Cow::from(format!("nmxm/{nmxm_id}/auth")),
             CredentialKey::RackFirmware { firmware_id } => {
                 Cow::from(format!("rack_firmware/{firmware_id}/token"))
             }

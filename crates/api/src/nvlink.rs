@@ -19,7 +19,8 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use db::DatabaseError;
-use forge_secrets::credentials::{CredentialKey, CredentialProvider, Credentials};
+use forge_secrets::credentials::Credentials;
+use forge_secrets::static_credentials::{StaticCredentialKey, StaticCredentialReader};
 use libnmxm::{Nmxm, NmxmApiError};
 
 use crate::handlers::credential::DEFAULT_NMX_M_NAME;
@@ -52,23 +53,33 @@ pub trait NmxmClientPool: Send + Sync + 'static {
     ) -> Result<Box<dyn Nmxm>, NvLinkPartitionError>;
 }
 
-#[derive(Debug)]
-pub struct NmxmClientPoolImpl<C> {
+pub struct NmxmClientPoolImpl {
     pool: libnmxm::NmxmClientPool,
-    credential_provider: Arc<C>,
+    static_credential_reader: Arc<dyn StaticCredentialReader>,
 }
 
-impl<C: CredentialProvider + 'static> NmxmClientPoolImpl<C> {
-    pub fn new(credential_provider: Arc<C>, pool: libnmxm::NmxmClientPool) -> Self {
+impl std::fmt::Debug for NmxmClientPoolImpl {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("NmxmClientPoolImpl")
+            .field("pool", &self.pool)
+            .finish_non_exhaustive()
+    }
+}
+
+impl NmxmClientPoolImpl {
+    pub fn new(
+        static_credential_reader: Arc<dyn StaticCredentialReader>,
+        pool: libnmxm::NmxmClientPool,
+    ) -> Self {
         NmxmClientPoolImpl {
-            credential_provider,
+            static_credential_reader,
             pool,
         }
     }
 }
 
 #[async_trait]
-impl<C: CredentialProvider + 'static> NmxmClientPool for NmxmClientPoolImpl<C> {
+impl NmxmClientPool for NmxmClientPoolImpl {
     async fn create_client(
         &self,
         endpoint: &str,
@@ -76,8 +87,8 @@ impl<C: CredentialProvider + 'static> NmxmClientPool for NmxmClientPoolImpl<C> {
     ) -> Result<Box<dyn Nmxm>, NvLinkPartitionError> {
         let id = nmxm_id.unwrap_or(DEFAULT_NMX_M_NAME.to_string());
         let credentials = self
-            .credential_provider
-            .get_credentials(&CredentialKey::NmxM { nmxm_id: id })
+            .static_credential_reader
+            .get_credentials(&StaticCredentialKey::NmxM { nmxm_id: id })
             .await
             .map_err(|e| NvLinkPartitionError::MissingCredentials(eyre::Report::from(e)))?
             .ok_or(NvLinkPartitionError::MissingCredentials(eyre::Report::msg(

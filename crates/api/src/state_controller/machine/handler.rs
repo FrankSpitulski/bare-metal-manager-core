@@ -32,7 +32,7 @@ use db::db_read::PgPoolReader;
 use db::machine::mark_machine_ingestion_done_with_dpf;
 use eyre::eyre;
 use forge_secrets::credentials::{
-    BmcCredentialType, CredentialKey, CredentialProvider, Credentials,
+    BmcCredentialType, CredentialKey, CredentialManager, Credentials,
 };
 use futures::TryFutureExt;
 use futures_util::FutureExt;
@@ -212,7 +212,7 @@ pub struct MachineStateHandlerBuilder {
     common_pools: Option<Arc<CommonPools>>,
     bom_validation: BomValidationConfig,
     instance_autoreboot_period: Option<TimePeriod>,
-    credential_provider: Option<Arc<dyn CredentialProvider>>,
+    credential_manager: Option<Arc<dyn CredentialManager>>,
     power_options_config: PowerOptionConfig,
     enable_secure_boot: bool,
     hgx_bmc_gpu_reboot_delay: chrono::Duration,
@@ -243,7 +243,7 @@ impl MachineStateHandlerBuilder {
             common_pools: None,
             bom_validation: BomValidationConfig::default(),
             instance_autoreboot_period: None,
-            credential_provider: None,
+            credential_manager: None,
             power_options_config: PowerOptionConfig {
                 enabled: true,
                 next_try_duration_on_success: chrono::Duration::minutes(0),
@@ -264,8 +264,8 @@ impl MachineStateHandlerBuilder {
         self
     }
 
-    pub fn credential_provider(mut self, credential_provider: Arc<dyn CredentialProvider>) -> Self {
-        self.credential_provider = Some(credential_provider);
+    pub fn credential_manager(mut self, credential_manager: Arc<dyn CredentialManager>) -> Self {
+        self.credential_manager = Some(credential_manager);
         self
     }
     pub fn dpu_up_threshold(mut self, dpu_up_threshold: chrono::Duration) -> Self {
@@ -394,7 +394,7 @@ impl MachineStateHandler {
             no_firmware_update_reset_retries: builder.no_firmware_update_reset_retries,
             instance_autoreboot_period: builder.instance_autoreboot_period,
             upgrade_script_state: Default::default(),
-            credential_provider: builder.credential_provider,
+            credential_manager: builder.credential_manager,
             async_firmware_uploader: Arc::new(Default::default()),
             hgx_bmc_gpu_reboot_delay: builder
                 .hgx_bmc_gpu_reboot_delay
@@ -6483,7 +6483,7 @@ struct HostUpgradeState {
     no_firmware_update_reset_retries: bool,
     instance_autoreboot_period: Option<TimePeriod>,
     upgrade_script_state: Arc<UpdateScriptManager>,
-    credential_provider: Option<Arc<dyn CredentialProvider>>,
+    credential_manager: Option<Arc<dyn CredentialManager>>,
     async_firmware_uploader: Arc<AsyncFirmwareUploader>,
     hgx_bmc_gpu_reboot_delay: tokio::time::Duration,
 }
@@ -6917,7 +6917,7 @@ impl HostUpgradeState {
         let address = explored_endpoint.address.to_string().clone();
         let script = to_install.script.unwrap_or("/bin/false".into()); // Should always be Some at this point
         let upgrade_script_state = self.upgrade_script_state.clone();
-        let (username, password) = if let Some(credential_provider) = &self.credential_provider {
+        let (username, password) = if let Some(credential_manager) = &self.credential_manager {
             let bmc_mac_address =
                 state
                     .host_snapshot
@@ -6930,7 +6930,7 @@ impl HostUpgradeState {
             let key = CredentialKey::BmcCredentials {
                 credential_type: BmcCredentialType::BmcRoot { bmc_mac_address },
             };
-            match credential_provider.get_credentials(&key).await {
+            match credential_manager.get_credentials(&key).await {
                 Ok(Some(credentials)) => match credentials {
                     Credentials::UsernamePassword { username, password } => (username, password),
                 },

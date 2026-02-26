@@ -20,7 +20,7 @@ use std::sync::Arc;
 
 use db::DatabaseError;
 use db::rack_firmware::RackFirmware as DbRackFirmware;
-use forge_secrets::credentials::{CredentialKey, CredentialProvider, Credentials};
+use forge_secrets::credentials::{CredentialKey, CredentialManager, Credentials};
 use rpc::forge::{
     DeviceUpdateResult, RackFirmware, RackFirmwareApplyRequest, RackFirmwareApplyResponse,
     RackFirmwareCreateRequest, RackFirmwareDeleteRequest, RackFirmwareGetRequest, RackFirmwareList,
@@ -306,7 +306,7 @@ pub async fn create(
     // Store token in Vault
     tracing::info!("Storing Rack firmware config {} with token in Vault", id);
 
-    api.credential_provider
+    api.credential_manager
         .set_credentials(
             &CredentialKey::RackFirmware {
                 firmware_id: id.clone(),
@@ -340,7 +340,7 @@ pub async fn create(
             spawn_firmware_download_task(
                 id.clone(),
                 parsed_struct,
-                api.credential_provider.clone(),
+                api.credential_manager.clone(),
                 api.database_connection.clone(),
             );
             tracing::info!(
@@ -422,14 +422,14 @@ pub async fn delete(
 fn spawn_firmware_download_task(
     firmware_id: String,
     parsed_components: ParsedFirmwareComponents,
-    credential_provider: Arc<dyn CredentialProvider>,
+    credential_manager: Arc<dyn CredentialManager>,
     database_connection: sqlx::PgPool,
 ) {
     tokio::spawn(async move {
         if let Err(e) = download_firmware_files(
             &firmware_id,
             &parsed_components,
-            credential_provider,
+            credential_manager,
             &database_connection,
         )
         .await
@@ -447,11 +447,11 @@ fn spawn_firmware_download_task(
 async fn download_firmware_files(
     firmware_id: &str,
     parsed_components: &ParsedFirmwareComponents,
-    credential_provider: Arc<dyn CredentialProvider>,
+    credential_manager: Arc<dyn CredentialManager>,
     database_connection: &sqlx::PgPool,
 ) -> Result<(), String> {
     // Retrieve token from Vault
-    let credentials = credential_provider
+    let credentials = credential_manager
         .get_credentials(&CredentialKey::RackFirmware {
             firmware_id: firmware_id.to_string(),
         })

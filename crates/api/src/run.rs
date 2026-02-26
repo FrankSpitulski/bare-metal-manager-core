@@ -20,6 +20,9 @@ use std::sync::Arc;
 use eyre::WrapErr;
 use forge_secrets::forge_vault;
 use forge_secrets::forge_vault::VaultConfig;
+use forge_secrets::static_credentials::{
+    StaticCredentialsConfig, create_static_credential_provider,
+};
 use tokio::sync::oneshot;
 use tokio::sync::oneshot::{Receiver, Sender};
 use tracing::subscriber::NoSubscriber;
@@ -174,8 +177,15 @@ pub async fn run(
             }
             (None, None, _) => {} // leave bmc_proxy untouched
         }
+        let static_credential_reader = create_static_credential_provider(
+            StaticCredentialsConfig::default(),
+            vault_client.clone(),
+        )
+        .await?;
+
         let redfish_pool = RedfishClientPoolImpl::new(
             vault_client.clone(),
+            static_credential_reader,
             rf_pool,
             carbide_config.site_explorer.bmc_proxy.clone(),
         );

@@ -27,7 +27,10 @@ use eyre::WrapErr;
 use figment::Figment;
 use figment::providers::{Env, Format, Toml};
 use forge_secrets::ForgeVaultClient;
-use forge_secrets::credentials::CredentialProvider;
+use forge_secrets::credentials::CredentialManager;
+use forge_secrets::static_credentials::{
+    StaticCredentialsConfig, create_static_credential_provider,
+};
 use futures_util::TryFutureExt;
 use librms::RackManagerClientPool;
 use model::attestation::spdm::VerifierImpl;
@@ -173,7 +176,7 @@ pub fn parse_carbide_config(
 }
 
 pub fn create_ipmi_tool(
-    credential_provider: Arc<dyn CredentialProvider>,
+    credential_manager: Arc<dyn CredentialManager>,
     carbide_config: &CarbideConfig,
 ) -> Arc<dyn IPMITool> {
     if carbide_config
@@ -185,7 +188,7 @@ pub fn create_ipmi_tool(
         Arc::new(IPMIToolTestImpl {})
     } else {
         Arc::new(IPMIToolImpl::new(
-            credential_provider,
+            credential_manager,
             &carbide_config.dpu_ipmi_reboot_attempts,
         ))
     }
@@ -304,8 +307,12 @@ pub async fn start_api(
     let common_pools =
         db::resource_pool::create_common_pools(db_pool.clone(), ib_fabric_ids).await?;
 
+    let static_credential_reader =
+        create_static_credential_provider(StaticCredentialsConfig::default(), vault_client.clone())
+            .await?;
+
     let ib_fabric_manager_impl = ib::create_ib_fabric_manager(
-        vault_client.clone(),
+        static_credential_reader.clone(),
         ib::IBFabricManagerConfig {
             endpoints: if ib_config.enabled {
                 carbide_config
@@ -362,6 +369,7 @@ pub async fn start_api(
         shared_redfish_pool.clone(),
         ipmi_tool.clone(),
         vault_client.clone(),
+        static_credential_reader.clone(),
         carbide_config
             .site_explorer
             .rotate_switch_nvos_credentials
@@ -372,14 +380,15 @@ pub async fn start_api(
 
     let nmxm_client_pool =
         libnmxm::NmxmClientPool::builder(nvlink_config.allow_insecure).build()?;
-    let nmxm_pool = NmxmClientPoolImpl::new(vault_client.clone(), nmxm_client_pool);
+    let nmxm_pool = NmxmClientPoolImpl::new(static_credential_reader.clone(), nmxm_client_pool);
 
     let shared_nmxm_pool: Arc<dyn NmxmClientPool> = Arc::new(nmxm_pool);
 
     let api_service = Arc::new(Api {
         certificate_provider: vault_client.clone(),
         common_pools,
-        credential_provider: vault_client,
+        credential_manager: vault_client,
+        static_credential_reader,
         database_connection: db_pool.clone(),
         dpu_health_log_limiter: LogLimiter::default(),
         dynamic_settings,
@@ -650,10 +659,7 @@ pub async fn initialize_and_start_controllers(
         let key = forge_secrets::credentials::CredentialKey::BmcCredentials {
             credential_type: forge_secrets::credentials::BmcCredentialType::SiteWideRoot,
         };
-        let credentials = api_service
-            .credential_provider
-            .get_credentials(&key)
-            .await?;
+        let credentials = api_service.credential_manager.get_credentials(&key).await?;
         let Some(forge_secrets::credentials::Credentials::UsernamePassword {
             username: _,
             password,
@@ -708,7 +714,7 @@ pub async fn initialize_and_start_controllers(
                         .instance_autoreboot_period
                         .clone(),
                 )
-                .credential_provider(api_service.credential_provider.clone())
+                .credential_manager(api_service.credential_manager.clone())
                 .power_options_config(carbide_config.power_manager_options.clone().into())
                 .dpf_config(crate::state_controller::machine::handler::DpfConfig::from(
                     carbide_config.dpf.clone(),
@@ -886,7 +892,7 @@ pub async fn initialize_and_start_controllers(
         meter.clone(),
         Some(downloader.clone()),
         Some(upload_limiter),
-        Some(api_service.credential_provider.clone()),
+        Some(api_service.credential_manager.clone()),
         work_lock_manager_handle.clone(),
     );
     let _preingestion_manager_stop_handle = preingestion_manager.start()?;

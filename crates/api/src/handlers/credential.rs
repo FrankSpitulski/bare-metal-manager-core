@@ -20,9 +20,8 @@ use std::io::Write;
 
 use ::rpc::errors::RpcDataConversionError;
 use ::rpc::forge as rpc;
-use forge_secrets::credentials::{BmcCredentialType, CredentialKey, CredentialType, Credentials};
+use forge_secrets::credentials::{BmcCredentialType, CredentialKey, Credentials};
 use mac_address::MacAddress;
-use model::ib::DEFAULT_IB_FABRIC_NAME;
 use tonic::{Request, Response, Status};
 
 use crate::CarbideError;
@@ -71,128 +70,33 @@ pub(crate) async fn create_credential(
                 })?;
         }
         rpc::CredentialType::Ufm => {
-            if let Some(username) = req.username {
-                api.credential_provider
-                    .set_credentials(
-                        &CredentialKey::UfmAuth {
-                            fabric: DEFAULT_IB_FABRIC_NAME.to_string(),
-                        },
-                        &Credentials::UsernamePassword {
-                            username: username.clone(),
-                            password: password.clone(),
-                        },
-                    )
-                    .await
-                    .map_err(|e| {
-                        CarbideError::internal(format!(
-                            "Error setting credential for Ufm {}: {:?} ",
-                            username.clone(),
-                            e
-                        ))
-                    })?;
-            } else if req.username.is_none() && password.is_empty() && req.vendor.is_some() {
+            if req.username.is_none() && password.is_empty() && req.vendor.is_some() {
                 write_ufm_certs(api, req.vendor.unwrap_or_default()).await?;
             } else {
-                return Err(tonic::Status::invalid_argument("missing UFM Url"));
+                return Err(tonic::Status::invalid_argument(
+                    "UFM credentials are externally managed via static credential configuration",
+                ));
             }
         }
         rpc::CredentialType::DpuUefi => {
-            if (api
-                .credential_provider
-                .get_credentials(&CredentialKey::DpuUefi {
-                    credential_type: CredentialType::SiteDefault,
-                })
-                .await)
-                .is_ok()
-            {
-                // TODO: support reset credential
-                return Err(tonic::Status::already_exists(
-                    "Not support to reset DPU UEFI credential",
-                ));
-            }
-            api.credential_provider
-                .set_credentials(
-                    &CredentialKey::DpuUefi {
-                        credential_type: CredentialType::SiteDefault,
-                    },
-                    &Credentials::UsernamePassword {
-                        username: "".to_string(),
-                        password: password.clone(),
-                    },
-                )
-                .await
-                .map_err(|e| {
-                    CarbideError::internal(format!("Error setting credential for DPU UEFI: {e:?} "))
-                })?
+            return Err(tonic::Status::invalid_argument(
+                "DPU UEFI credentials are externally managed via static credential configuration",
+            ));
         }
         rpc::CredentialType::HostUefi => {
-            if api
-                .credential_provider
-                .get_credentials(&CredentialKey::HostUefi {
-                    credential_type: CredentialType::SiteDefault,
-                })
-                .await
-                .is_ok()
-            {
-                // TODO: support reset credential
-                return Err(tonic::Status::already_exists(
-                    "Resetting the Host UEFI credentials in Vault is not supported",
-                ));
-            }
-            api.credential_provider
-                .set_credentials(
-                    &CredentialKey::HostUefi {
-                        credential_type: CredentialType::SiteDefault,
-                    },
-                    &Credentials::UsernamePassword {
-                        username: "".to_string(),
-                        password: password.clone(),
-                    },
-                )
-                .await
-                .map_err(|e| {
-                    CarbideError::internal(format!("Error setting credential for Host UEFI: {e:?}"))
-                })?
+            return Err(tonic::Status::invalid_argument(
+                "Host UEFI credentials are externally managed via static credential configuration",
+            ));
         }
         rpc::CredentialType::HostBmcFactoryDefault => {
-            let Some(username) = req.username else {
-                return Err(tonic::Status::invalid_argument("missing username"));
-            };
-            let Some(vendor) = req.vendor else {
-                return Err(tonic::Status::invalid_argument("missing vendor"));
-            };
-            let vendor: bmc_vendor::BMCVendor = vendor.as_str().into();
-            api.credential_provider
-                .set_credentials(
-                    &CredentialKey::HostRedfish {
-                        credential_type: CredentialType::HostHardwareDefault { vendor },
-                    },
-                    &Credentials::UsernamePassword { username, password },
-                )
-                .await
-                .map_err(|e| {
-                    CarbideError::internal(format!(
-                        "Error setting Host factory default credential: {e:?}"
-                    ))
-                })?
+            return Err(tonic::Status::invalid_argument(
+                "Host BMC factory default credentials are externally managed via static credential configuration",
+            ));
         }
         rpc::CredentialType::DpuBmcFactoryDefault => {
-            let Some(username) = req.username else {
-                return Err(tonic::Status::invalid_argument("missing username"));
-            };
-            api.credential_provider
-                .set_credentials(
-                    &CredentialKey::DpuRedfish {
-                        credential_type: CredentialType::DpuHardwareDefault,
-                    },
-                    &Credentials::UsernamePassword { username, password },
-                )
-                .await
-                .map_err(|e| {
-                    CarbideError::internal(format!(
-                        "Error setting DPU factory default credential: {e:?}"
-                    ))
-                })?
+            return Err(tonic::Status::invalid_argument(
+                "DPU BMC factory default credentials are externally managed via static credential configuration",
+            ));
         }
         rpc::CredentialType::RootBmcByMacAddress => {
             let Some(mac_address) = req.mac_address else {
@@ -218,28 +122,9 @@ pub(crate) async fn create_credential(
             ));
         }
         rpc::CredentialType::NmxM => {
-            if let Some(username) = req.username {
-                api.credential_provider
-                    .set_credentials(
-                        &CredentialKey::NmxM {
-                            nmxm_id: DEFAULT_NMX_M_NAME.to_string(),
-                        },
-                        &Credentials::UsernamePassword {
-                            username: username.clone(),
-                            password: password.clone(),
-                        },
-                    )
-                    .await
-                    .map_err(|e| {
-                        CarbideError::internal(format!(
-                            "Error setting credential for NmxM {}: {:?} ",
-                            username.clone(),
-                            e
-                        ))
-                    })?;
-            } else {
-                return Err(tonic::Status::invalid_argument("missing username"));
-            }
+            return Err(tonic::Status::invalid_argument(
+                "NMX-M credentials are externally managed via static credential configuration",
+            ));
         }
     };
 
@@ -262,28 +147,9 @@ pub(crate) async fn delete_credential(
 
     match credential_type {
         rpc::CredentialType::Ufm => {
-            if let Some(username) = req.username {
-                api.credential_provider
-                    .set_credentials(
-                        &CredentialKey::UfmAuth {
-                            fabric: DEFAULT_IB_FABRIC_NAME.to_string(),
-                        },
-                        &Credentials::UsernamePassword {
-                            username: username.clone(),
-                            password: "".to_string(),
-                        },
-                    )
-                    .await
-                    .map_err(|e| {
-                        CarbideError::internal(format!(
-                            "Error deleting credential for Ufm {}: {:?} ",
-                            username.clone(),
-                            e
-                        ))
-                    })?;
-            } else {
-                return Err(tonic::Status::invalid_argument("missing UFM Url"));
-            }
+            return Err(tonic::Status::invalid_argument(
+                "UFM credentials are externally managed via static credential configuration",
+            ));
         }
         rpc::CredentialType::SiteWideBmcRoot => {
             // TODO: actually delete entry from vault instead of setting to empty string
@@ -345,7 +211,7 @@ pub(crate) async fn update_machine_credentials(
     };
 
     Ok(update
-        .execute(api.credential_provider.as_ref())
+        .execute(api.credential_manager.as_ref())
         .await
         .map(Response::new)?)
 }
@@ -385,7 +251,7 @@ pub(crate) async fn get_dpu_ssh_credential(
 
     // Load credentials from Vault
     let credentials = api
-        .credential_provider
+        .credential_manager
         .get_credentials(&CredentialKey::DpuSsh { machine_id })
         .await
         .map_err(|err| CarbideError::internal(format!("Secret manager error: {err}")))?
@@ -439,7 +305,7 @@ pub(crate) async fn delete_bmc_root_credentials_by_mac(
         credential_type: BmcCredentialType::BmcRoot { bmc_mac_address },
     };
 
-    api.credential_provider
+    api.credential_manager
         .delete_credentials(&credential_key)
         .await
         .map_err(|e| CarbideError::internal(format!("Error deleting credential for BMC: {e:?} ")))
@@ -468,7 +334,7 @@ async fn set_bmc_credentials(
     credential_key: &CredentialKey,
     credentials: &Credentials,
 ) -> Result<(), CarbideError> {
-    api.credential_provider
+    api.credential_manager
         .set_credentials(credential_key, credentials)
         .await
         .map_err(|e| CarbideError::internal(format!("Error setting credential for BMC: {e:?} ")))

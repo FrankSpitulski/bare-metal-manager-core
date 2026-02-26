@@ -16,7 +16,7 @@
  */
 use ::rpc::forge as rpc;
 use forge_secrets::credentials::{
-    BmcCredentialType, CredentialKey, CredentialProvider, Credentials,
+    BmcCredentialType, CredentialKey, CredentialManager, Credentials,
 };
 use sqlx::PgPool;
 
@@ -34,7 +34,7 @@ pub(crate) async fn get(
     let response = get_inner(
         request,
         &api.database_connection,
-        api.credential_provider.as_ref(),
+        api.credential_manager.as_ref(),
     )
     .await?;
 
@@ -46,7 +46,7 @@ pub(crate) async fn get(
 pub(crate) async fn get_inner(
     request: rpc::BmcMetaDataGetRequest,
     pool: &PgPool,
-    credential_provider: &dyn CredentialProvider,
+    credential_manager: &dyn CredentialManager,
 ) -> Result<rpc::BmcMetaDataGetResponse, CarbideError> {
     let mut txn = pool.txn_begin().await?;
     let (bmc_endpoint_request, _) = validate_and_complete_bmc_endpoint_request(
@@ -89,7 +89,7 @@ pub(crate) async fn get_inner(
         }
     };
 
-    let credentials = credential_provider
+    let credentials = credential_manager
         .get_credentials(&CredentialKey::BmcCredentials {
             credential_type: BmcCredentialType::BmcRoot { bmc_mac_address },
         })

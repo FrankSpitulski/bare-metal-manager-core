@@ -38,7 +38,7 @@ use vaultrs::{kv2, pki};
 
 use crate::SecretsError;
 use crate::certificates::{Certificate, CertificateProvider};
-use crate::credentials::{CredentialKey, CredentialProvider, Credentials};
+use crate::credentials::{CredentialKey, CredentialManager, Credentials, SecretPathReader};
 
 #[derive(Clone, Debug)]
 enum ForgeVaultAuthenticationType {
@@ -309,13 +309,13 @@ trait VaultTask<T> {
     ) -> Result<T, SecretsError>;
 }
 
-struct GetCredentialsHelper<'key, 'location> {
+struct GetCredentialsByPathHelper<'path, 'location> {
     pub kv_mount_location: &'location String,
-    pub key: &'key CredentialKey,
+    pub path: &'path str,
 }
 
 #[async_trait]
-impl VaultTask<Option<Credentials>> for GetCredentialsHelper<'_, '_> {
+impl VaultTask<Option<Credentials>> for GetCredentialsByPathHelper<'_, '_> {
     async fn execute(
         &self,
         vault_client: Arc<VaultClient>,
@@ -326,12 +326,8 @@ impl VaultTask<Option<Credentials>> for GetCredentialsHelper<'_, '_> {
             .add(1, &[KeyValue::new("request_type", "get_credentials")]);
 
         let time_started_vault_request = Instant::now();
-        let vault_response = kv2::read(
-            vault_client.deref(),
-            self.kv_mount_location,
-            self.key.to_key_str().as_ref(),
-        )
-        .await;
+        let vault_response =
+            kv2::read(vault_client.deref(), self.kv_mount_location, self.path).await;
         let elapsed_request_duration = time_started_vault_request.elapsed().as_millis() as u64;
         vault_metrics.vault_request_duration_histogram.record(
             elapsed_request_duration,
@@ -339,7 +335,7 @@ impl VaultTask<Option<Credentials>> for GetCredentialsHelper<'_, '_> {
         );
 
         let credentials = match vault_response {
-            // If pasword is empty we treat it the same as missing credentials
+            // If password is empty we treat it the same as missing credentials
             Ok(Credentials::UsernamePassword {
                 username: _,
                 password,
@@ -349,18 +345,11 @@ impl VaultTask<Option<Credentials>> for GetCredentialsHelper<'_, '_> {
                 let status_code = record_vault_client_error(&ce, "get_credentials", vault_metrics);
                 match status_code {
                     Some(404) => {
-                        // Not found errors are common and of no concern
-                        tracing::debug!(
-                            "Credentials not found for key ({})",
-                            self.key.to_key_str().as_ref()
-                        );
+                        tracing::debug!("Credentials not found for path ({})", self.path);
                         Ok(None)
                     }
                     _ => {
-                        tracing::error!(
-                            "Error getting credentials ({}). Error: {ce:?}",
-                            self.key.to_key_str().as_ref()
-                        );
+                        tracing::error!("Error getting credentials ({}). Error: {ce:?}", self.path);
                         Err(SecretsError::GenericError(ce.into()))
                     }
                 }
@@ -401,15 +390,15 @@ fn record_vault_client_error(
     status_code
 }
 
-struct SetCredentialsHelper<'key, 'location> {
+struct SetCredentialsByPathHelper<'path, 'location, 'creds> {
     pub kv_mount_location: &'location String,
-    pub key: &'key CredentialKey,
-    pub credentials: &'key Credentials,
+    pub path: &'path str,
+    pub credentials: &'creds Credentials,
     pub allow_overwrite: bool,
 }
 
 #[async_trait]
-impl VaultTask<()> for SetCredentialsHelper<'_, '_> {
+impl VaultTask<()> for SetCredentialsByPathHelper<'_, '_, '_> {
     async fn execute(
         &self,
         vault_client: Arc<VaultClient>,
@@ -425,7 +414,7 @@ impl VaultTask<()> for SetCredentialsHelper<'_, '_> {
             kv2::set(
                 vault_client.deref(),
                 self.kv_mount_location,
-                self.key.to_key_str().as_ref(),
+                self.path,
                 &self.credentials,
             )
             .await
@@ -439,7 +428,7 @@ impl VaultTask<()> for SetCredentialsHelper<'_, '_> {
             kv2::set_with_options(
                 vault_client.deref(),
                 self.kv_mount_location,
-                self.key.to_key_str().as_ref(),
+                self.path,
                 &self.credentials,
                 options,
             )
@@ -465,13 +454,13 @@ impl VaultTask<()> for SetCredentialsHelper<'_, '_> {
     }
 }
 
-struct DeleteCredentialsHelper<'key, 'location> {
+struct DeleteCredentialsByPathHelper<'path, 'location> {
     pub kv_mount_location: &'location String,
-    pub key: &'key CredentialKey,
+    pub path: &'path str,
 }
 
 #[async_trait]
-impl VaultTask<()> for DeleteCredentialsHelper<'_, '_> {
+impl VaultTask<()> for DeleteCredentialsByPathHelper<'_, '_> {
     async fn execute(
         &self,
         vault_client: Arc<VaultClient>,
@@ -482,12 +471,8 @@ impl VaultTask<()> for DeleteCredentialsHelper<'_, '_> {
             .add(1, &[KeyValue::new("request_type", "delete_credentials")]);
 
         let time_started_vault_request = Instant::now();
-        let vault_response = kv2::delete_metadata(
-            vault_client.deref(),
-            self.kv_mount_location,
-            self.key.to_key_str().as_ref(),
-        )
-        .await;
+        let vault_response =
+            kv2::delete_metadata(vault_client.deref(), self.kv_mount_location, self.path).await;
 
         let elapsed_request_duration = time_started_vault_request.elapsed().as_millis() as u64;
         vault_metrics.vault_request_duration_histogram.record(
@@ -509,19 +494,46 @@ impl VaultTask<()> for DeleteCredentialsHelper<'_, '_> {
 }
 
 #[async_trait]
-impl CredentialProvider for ForgeVaultClient {
+impl SecretPathReader for ForgeVaultClient {
+    async fn get_credentials_by_path(
+        &self,
+        path: &str,
+    ) -> Result<Option<Credentials>, SecretsError> {
+        let kv_mount_location = &self.vault_client_config.kv_mount_location;
+        let helper = GetCredentialsByPathHelper {
+            kv_mount_location,
+            path,
+        };
+        let vault_client = self.vault_client().await?;
+        helper.execute(vault_client, &self.vault_metrics).await
+    }
+}
+
+impl ForgeVaultClient {
+    pub async fn set_credentials_by_path(
+        &self,
+        path: &str,
+        credentials: &Credentials,
+    ) -> Result<(), SecretsError> {
+        let kv_mount_location = &self.vault_client_config.kv_mount_location;
+        let helper = SetCredentialsByPathHelper {
+            kv_mount_location,
+            path,
+            credentials,
+            allow_overwrite: true,
+        };
+        let vault_client = self.vault_client().await?;
+        helper.execute(vault_client, &self.vault_metrics).await
+    }
+}
+
+#[async_trait]
+impl CredentialManager for ForgeVaultClient {
     async fn get_credentials(
         &self,
         key: &CredentialKey,
     ) -> Result<Option<Credentials>, SecretsError> {
-        let kv_mount_location = &self.vault_client_config.kv_mount_location;
-        let get_credentials_helper = GetCredentialsHelper {
-            kv_mount_location,
-            key,
-        };
-        let vault_client = self.vault_client().await?;
-        get_credentials_helper
-            .execute(vault_client, &self.vault_metrics)
+        self.get_credentials_by_path(key.to_key_str().as_ref())
             .await
     }
 
@@ -530,16 +542,7 @@ impl CredentialProvider for ForgeVaultClient {
         key: &CredentialKey,
         credentials: &Credentials,
     ) -> Result<(), SecretsError> {
-        let kv_mount_location = &self.vault_client_config.kv_mount_location;
-        let set_credentials_helper = SetCredentialsHelper {
-            key,
-            credentials,
-            kv_mount_location,
-            allow_overwrite: true,
-        };
-        let vault_client = self.vault_client().await?;
-        set_credentials_helper
-            .execute(vault_client, &self.vault_metrics)
+        self.set_credentials_by_path(key.to_key_str().as_ref(), credentials)
             .await
     }
 
@@ -549,8 +552,9 @@ impl CredentialProvider for ForgeVaultClient {
         credentials: &Credentials,
     ) -> Result<(), SecretsError> {
         let kv_mount_location = &self.vault_client_config.kv_mount_location;
-        let set_credentials_helper = SetCredentialsHelper {
-            key,
+        let key_path = key.to_key_str();
+        let set_credentials_helper = SetCredentialsByPathHelper {
+            path: key_path.as_ref(),
             credentials,
             kv_mount_location,
             allow_overwrite: false,
@@ -563,14 +567,13 @@ impl CredentialProvider for ForgeVaultClient {
 
     async fn delete_credentials(&self, key: &CredentialKey) -> Result<(), SecretsError> {
         let kv_mount_location = &self.vault_client_config.kv_mount_location;
-        let delete_credentials_helper = DeleteCredentialsHelper {
-            key,
+        let key_path = key.to_key_str();
+        let helper = DeleteCredentialsByPathHelper {
+            path: key_path.as_ref(),
             kv_mount_location,
         };
         let vault_client = self.vault_client().await?;
-        delete_credentials_helper
-            .execute(vault_client, &self.vault_metrics)
-            .await
+        helper.execute(vault_client, &self.vault_metrics).await
     }
 }
 

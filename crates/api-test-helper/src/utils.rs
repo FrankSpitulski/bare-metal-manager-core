@@ -22,7 +22,7 @@ use std::time::Duration;
 use std::{env, path};
 
 use eyre::Report;
-use forge_secrets::credentials::{CredentialKey, CredentialProvider, Credentials};
+use forge_secrets::credentials::{CredentialKey, CredentialManager, Credentials};
 use forge_secrets::forge_vault;
 use forge_secrets::forge_vault::VaultConfig;
 use metrics_endpoint::MetricsSetup;
@@ -304,22 +304,20 @@ pub async fn populate_initial_vault_secrets(
             },
         )
         .await?;
+
     vault_client
-        .set_credentials(
-            &CredentialKey::DpuUefi {
-                credential_type: forge_secrets::credentials::CredentialType::SiteDefault,
-            },
+        .set_credentials_by_path(
+            "machines/all_dpus/site_default/uefi-metadata-items/auth",
             &Credentials::UsernamePassword {
                 username: "root".to_string(),
                 password: "password".to_string(),
             },
         )
         .await?;
+
     vault_client
-        .set_credentials(
-            &CredentialKey::HostUefi {
-                credential_type: forge_secrets::credentials::CredentialType::SiteDefault,
-            },
+        .set_credentials_by_path(
+            "machines/all_hosts/site_default/uefi-metadata-items/auth",
             &Credentials::UsernamePassword {
                 username: "root".to_string(),
                 password: "password".to_string(),
