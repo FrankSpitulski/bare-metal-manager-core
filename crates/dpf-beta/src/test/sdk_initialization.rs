@@ -227,7 +227,7 @@ async fn test_create_initialization_objects() {
         bfb_url: "http://example.com/test.bfb".to_string(),
         bmc_password: "test-password".to_string(),
         deployment_name: "carbide-deployment".to_string(),
-        services: vec![],
+        ..Default::default()
     };
 
     sdk.create_initialization_objects(&config).await.unwrap();

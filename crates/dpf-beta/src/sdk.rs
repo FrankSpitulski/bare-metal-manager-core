@@ -70,26 +70,28 @@ pub(crate) const HOLD_ANNOTATION: &str = "provisioning.dpu.nvidia.com/wait-for-e
 /// and DPUNode resources.
 pub trait ResourceLabeler: Send + Sync {
     /// Labels to apply to DPUDevice resources on creation.
-    fn device_labels(&self, info: &DpuDeviceInfo) -> BTreeMap<String, String>;
+    fn device_labels(&self, _info: &DpuDeviceInfo) -> BTreeMap<String, String> {
+        BTreeMap::new()
+    }
 
     /// Labels to apply to DPUNode resources on creation.
     /// Also used as the `dpu_node_selector` in DPUDeployment
     /// and removed on node deletion.
-    fn node_labels(&self) -> BTreeMap<String, String>;
+    fn node_labels(&self) -> BTreeMap<String, String> {
+        BTreeMap::new()
+    }
+
+    /// Optional Kubernetes label selector to scope DPU watches and listings
+    /// (e.g. `"app=foo,env=prod"`). Returns `None` by default.
+    fn dpu_label_selector(&self) -> Option<String> {
+        None
+    }
 }
 
 /// Default labeler that applies no labels.
 pub struct NoLabels;
 
-impl ResourceLabeler for NoLabels {
-    fn device_labels(&self, _info: &DpuDeviceInfo) -> BTreeMap<String, String> {
-        BTreeMap::new()
-    }
-
-    fn node_labels(&self) -> BTreeMap<String, String> {
-        BTreeMap::new()
-    }
-}
+impl ResourceLabeler for NoLabels {}
 
 /// The main DPF SDK interface.
 ///
@@ -481,6 +483,16 @@ impl<
         };
         self.create_services_and_deployment(&services, &config.deployment_name, &bfb_name)
             .await?;
+        if let Some(ref bfcfg) = config.bfcfg_template {
+            let data = BTreeMap::from([("BF_CFG_TEMPLATE".to_string(), bfcfg.clone())]);
+            K8sConfigRepository::apply_configmap(
+                &*self.repo,
+                "carbide-dpf-bf-cfg-template",
+                &self.namespace,
+                data,
+            )
+            .await?;
+        }
         Ok(())
     }
 }
@@ -833,7 +845,7 @@ impl<R: DpuRepository + DpuNodeRepository + DpuDeviceRepository, L: ResourceLabe
     }
 }
 
-impl<R: DpuRepository, L> DpfSdk<R, L> {
+impl<R: DpuRepository, L: ResourceLabeler> DpfSdk<R, L> {
     /// Create a watcher builder for DPF events.
     ///
     /// The watcher monitors DPU resources and invokes
@@ -848,7 +860,11 @@ impl<R: DpuRepository, L> DpfSdk<R, L> {
     ///
     /// Call `.start()` on the returned builder to begin watching.
     pub fn watcher(&self) -> DpuWatcherBuilder<R> {
-        DpuWatcherBuilder::new(self.repo.clone(), self.namespace.clone())
+        let mut builder = DpuWatcherBuilder::new(self.repo.clone(), self.namespace.clone());
+        if let Some(selector) = self.labeler.dpu_label_selector() {
+            builder = builder.with_label_selector(selector);
+        }
+        builder
     }
 }
 
@@ -1005,7 +1021,11 @@ mod tests {
                 .get(&Self::ns_key(ns, name))
                 .cloned())
         }
-        async fn list(&self, ns: &str) -> Result<Vec<DPU>, DpfError> {
+        async fn list(
+            &self,
+            ns: &str,
+            _label_selector: Option<&str>,
+        ) -> Result<Vec<DPU>, DpfError> {
             Ok(self
                 .dpus
                 .read()
@@ -1027,7 +1047,12 @@ mod tests {
             self.dpus.write().unwrap().remove(&Self::ns_key(ns, name));
             Ok(())
         }
-        fn watch<F, Fut>(&self, _ns: &str, _handler: F) -> impl Future<Output = ()> + Send + 'static
+        fn watch<F, Fut>(
+            &self,
+            _ns: &str,
+            _label_selector: Option<&str>,
+            _handler: F,
+        ) -> impl Future<Output = ()> + Send + 'static
         where
             F: Fn(Arc<DPU>) -> Fut + Send + Sync + 'static,
             Fut: Future<Output = Result<(), DpfError>> + Send + 'static,
@@ -1331,7 +1356,9 @@ mod tests {
             .await
             .unwrap();
 
-        let dpus = DpuRepository::list(&mock, TEST_NAMESPACE).await.unwrap();
+        let dpus = DpuRepository::list(&mock, TEST_NAMESPACE, None)
+            .await
+            .unwrap();
         assert_eq!(dpus.len(), 0, "DPU CR should be deleted");
 
         let devices = DpuDeviceRepository::list(&mock, TEST_NAMESPACE)
@@ -1395,6 +1422,7 @@ mod tests {
             bmc_password: "secret123".to_string(),
             deployment_name: "my-deployment".to_string(),
             services: vec![],
+            bfcfg_template: None,
         };
 
         assert_eq!(config.namespace, "custom-ns");

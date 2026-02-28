@@ -700,6 +700,7 @@ async fn run_provisioning_flow(
         bmc_password: bmc_password.to_string(),
         deployment_name: "carbide-deployment".to_string(),
         services: services.to_vec(),
+        bfcfg_template: None,
     };
     sdk.create_initialization_objects(&init_config).await?;
     tracing::info!("BFB, DPUFlavor, and DPUDeployment created");
@@ -779,7 +780,7 @@ async fn wait_for_dpu_created_after(
     let watch_repo = repo.clone();
     let _watch_handle = tokio::spawn(async move {
         watch_repo
-            .watch(&namespace, move |dpu: Arc<DPU>| {
+            .watch(&namespace, None, move |dpu: Arc<DPU>| {
                 let name = dpu.metadata.name.as_deref().unwrap_or_default();
                 if dpu.spec.dpu_device_name != device_name {
                     tracing::debug!(
@@ -956,7 +957,7 @@ async fn show_status(
 
     // List DPU CRs (operator-created)
     tracing::info!("DPUs:");
-    let dpus = DpuRepository::list(&repo, namespace).await?;
+    let dpus = DpuRepository::list(&repo, namespace, None).await?;
     if dpus.is_empty() {
         tracing::info!("  (none)");
     }

@@ -28,6 +28,9 @@ pub struct DpfInitConfig {
     /// Service templates and configs for M4 DPUDeployment.
     /// When empty, `default_services()` is used automatically.
     pub services: Vec<ServiceDefinition>,
+    /// Rendered bf.cfg template content for the DPU configuration ConfigMap.
+    /// When set, a ConfigMap is created during initialization.
+    pub bfcfg_template: Option<String>,
 }
 
 /// Service type for configPorts (DPUServiceConfiguration).
@@ -127,6 +130,7 @@ impl Default for DpfInitConfig {
             bmc_password: String::new(),
             deployment_name: "carbide-deployment".to_string(),
             services: Vec::new(),
+            bfcfg_template: None,
         }
     }
 }

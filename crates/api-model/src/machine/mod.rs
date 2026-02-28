@@ -1370,9 +1370,7 @@ impl NextStateBFBSupport<ReprovisionState> for ReprovisionState {
             dpf_based_dpu_provisioning_possible(state, dpf_enabled_at_site, true);
         if is_dpf_based_provisioning_possible {
             ReprovisionState::DpfStates {
-                substate: DpfState::TriggerReprovisioning {
-                    phase: ReprovisioningPhase::UpdateDpuStatusToError,
-                },
+                substate: DpfState::Reprovisioning,
             }
         } else if enable_secure_boot && bfb_support {
             tracing::info!("All DPUs support BFB install via Redfish");
@@ -1539,6 +1537,8 @@ pub enum FailureCause {
     MeasurementsRevoked { err: String },
 
     MeasurementsCAValidationFailed { err: String },
+
+    DpfProvisioning { err: String },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Eq, PartialEq)]
@@ -1641,28 +1641,53 @@ pub enum DpuInitState {
     WaitingForNetworkInstall, // Deprecated now, not used
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Eq, PartialEq, PartialOrd, Ord)]
+/// DPF operator integration states.
+///
+/// The DPF operator manages all internal provisioning logic. Carbide only
+/// declares the setup, waits for completion, and handles cleanup.
+#[derive(Debug, Clone, Serialize, Eq, PartialEq, PartialOrd, Ord)]
 #[serde(tag = "dpfstate", rename_all = "lowercase")]
 pub enum DpfState {
-    CreateDpuDevice,
-    WaitForDpuDeviceToReady,
-    DpuDeviceCreated,
-    CreateDpuNode,
-    DpuDeviceReady,
-    TriggerReprovisioning { phase: ReprovisioningPhase }, // This is way to trigger re-provisioning of a DPU.
-    UpdateNodeEffectAnnotation,
-    WaitingForOsInstallToComplete,
-    WaitForNetworkConfigAndRemoveAnnotation,
+    /// Registering DPU devices and node with DPF operator.
+    Provisioning,
+    /// Waiting for DPF operator to complete provisioning.
+    /// Watcher callbacks drive transitions (DPU ready, reboot required).
+    WaitingForReady {
+        /// Current DPU phase from DPF operator (for debugging/observability only).
+        /// Carbide should not care about non actionable DPF internal phases.
+        #[serde(default)]
+        phase: Option<String>,
+    },
+    /// Triggering reprovisioning via DPF operator.
+    Reprovisioning,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Eq, PartialEq, PartialOrd, Ord)]
-#[serde(tag = "reprovisioningphase", rename_all = "lowercase")]
-pub enum ReprovisioningPhase {
-    // Only DPUs which needs reprovisioning will be updated to error phase and deleted.
-    UpdateDpuStatusToError,
-    DeleteDpu,
-    // Following is a sync state.
-    WaitingForAllDpusUnderReprovisioningToBeDeleted,
+/// Helper for custom deserialization of DpfState from JSON `{"dpfstate": "<tag>"}`.
+#[derive(Deserialize)]
+struct DpfStateTag {
+    dpfstate: String,
+    #[serde(default)]
+    phase: Option<String>,
+}
+
+/// Custom Deserialize so machine state loaded from the DB does not fail when rows
+/// contain legacy or unknown DpfState variant names (from before the enum was
+/// reduced to Provisioning, WaitingForReady, Reprovisioning). Unknown tags are
+/// mapped to Provisioning so the DPU is re-provisioned via the current DPF
+/// operator path with no extra DB state or special-case handling in the state machine.
+impl<'de> Deserialize<'de> for DpfState {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let tag = DpfStateTag::deserialize(deserializer)?;
+        Ok(match tag.dpfstate.as_str() {
+            "provisioning" => DpfState::Provisioning,
+            "waitingforready" => DpfState::WaitingForReady { phase: tag.phase },
+            "reprovisioning" => DpfState::Reprovisioning,
+            _ => DpfState::Provisioning,
+        })
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Eq, PartialEq, PartialOrd, Ord)]
@@ -2004,6 +2029,7 @@ impl Display for FailureCause {
             FailureCause::MeasurementsCAValidationFailed { .. } => {
                 write!(f, "MeasurementsCAValidationFailed")
             }
+            FailureCause::DpfProvisioning { .. } => write!(f, "DpfProvisioning"),
         }
     }
 }
@@ -2281,7 +2307,7 @@ pub fn get_action_for_dpu_state(
                 ReprovisionState::BufferTime => (Action::Retry, None),
                 ReprovisionState::WaitingForNetworkInstall
                 | ReprovisionState::DpfStates {
-                    substate: DpfState::WaitingForOsInstallToComplete,
+                    substate: DpfState::WaitingForReady { .. },
                 } => (Action::Discovery, None),
                 _ => {
                     tracing::info!(
@@ -2303,7 +2329,7 @@ pub fn get_action_for_dpu_state(
             match dpu_state {
                 DpuInitState::Init
                 | DpuInitState::DpfStates {
-                    state: DpfState::WaitingForOsInstallToComplete,
+                    state: DpfState::WaitingForReady { .. },
                 } => (Action::Discovery, None),
                 _ => {
                     tracing::info!(
@@ -2742,6 +2768,57 @@ mod tests {
                 },
             }
         );
+    }
+
+    /// Current tags deserialize to the correct variant and round-trip.
+    #[test]
+    fn test_dpf_state_deserialize_current_tags_and_roundtrip() {
+        for (json_tag, expected) in [
+            (r#"{"dpfstate":"provisioning"}"#, DpfState::Provisioning),
+            (
+                r#"{"dpfstate":"waitingforready"}"#,
+                DpfState::WaitingForReady { phase: None },
+            ),
+            (r#"{"dpfstate":"reprovisioning"}"#, DpfState::Reprovisioning),
+        ] {
+            let parsed: DpfState = serde_json::from_str(json_tag).unwrap();
+            assert_eq!(
+                parsed, expected,
+                "tag {} should deserialize to {:?}",
+                json_tag, expected
+            );
+            let serialized = serde_json::to_string(&parsed).unwrap();
+            let roundtrip: DpfState = serde_json::from_str(&serialized).unwrap();
+            assert_eq!(
+                roundtrip, expected,
+                "round-trip for {:?} must preserve value",
+                expected
+            );
+        }
+    }
+
+    /// Legacy or unknown tags deserialize to Provisioning so the DPU is
+    /// re-provisioned via the current DPF path without special-case handling.
+    #[test]
+    fn test_dpf_state_deserialize_legacy_and_unknown_maps_to_provisioning() {
+        let legacy_tags = [
+            "createdpudevice",
+            "waitfordpudevicetoready",
+            "dpudeviceready",
+            "triggerreprovisioning",
+            "waitingforosinstalltocomplete",
+            "unknown_tag_never_seen",
+        ];
+        for tag in legacy_tags {
+            let json = format!(r#"{{"dpfstate":"{}"}}"#, tag);
+            let parsed: DpfState = serde_json::from_str(&json).unwrap();
+            assert_eq!(
+                parsed,
+                DpfState::Provisioning,
+                "legacy/unknown tag {:?} must map to Provisioning for re-provision",
+                tag
+            );
+        }
     }
 }
 

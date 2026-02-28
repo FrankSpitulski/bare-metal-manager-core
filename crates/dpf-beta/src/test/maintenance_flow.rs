@@ -104,7 +104,7 @@ impl DpuRepository for MaintenanceFlowMock {
     async fn get(&self, _: &str, _: &str) -> Result<Option<DPU>, DpfError> {
         Ok(None)
     }
-    async fn list(&self, _: &str) -> Result<Vec<DPU>, DpfError> {
+    async fn list(&self, _: &str, _: Option<&str>) -> Result<Vec<DPU>, DpfError> {
         Ok(vec![])
     }
     async fn patch_status(&self, _: &str, _: &str, _: serde_json::Value) -> Result<(), DpfError> {
@@ -113,7 +113,12 @@ impl DpuRepository for MaintenanceFlowMock {
     async fn delete(&self, _: &str, _: &str) -> Result<(), DpfError> {
         Ok(())
     }
-    fn watch<F, Fut>(&self, _: &str, handler: F) -> impl Future<Output = ()> + Send + 'static
+    fn watch<F, Fut>(
+        &self,
+        _: &str,
+        _: Option<&str>,
+        handler: F,
+    ) -> impl Future<Output = ()> + Send + 'static
     where
         F: Fn(Arc<DPU>) -> Fut + Send + Sync + 'static,
         Fut: Future<Output = Result<(), DpfError>> + Send + 'static,
