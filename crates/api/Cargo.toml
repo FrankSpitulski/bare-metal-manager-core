@@ -92,6 +92,13 @@ hyper-util = { workspace = true }
 ipnetwork = { workspace = true, features = ["serde"] }
 itertools = { workspace = true }
 jsonwebtoken = { features = ["rust_crypto"], workspace = true }
+k8s-openapi = { features = ["latest"], workspace = true }
+kube = { default-features = false, features = [
+  "runtime",
+  "derive",
+  "client",
+  "rustls-tls",
+], workspace = true }
 lazy_static = { workspace = true }
 libredfish = { workspace = true }
 librms = { workspace = true }
@@ -196,12 +203,6 @@ tower-test = { workspace = true }
 hyper = { features = ["client", "http1"], workspace = true }
 http = { workspace = true }
 once_cell = { workspace = true }
-kube = { default-features = false, features = [
-  "runtime",
-  "derive",
-  "client",
-  "rustls-tls",
-], workspace = true }
 
 [lints]
 workspace = true

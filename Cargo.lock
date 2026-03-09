@@ -1350,6 +1350,7 @@ dependencies = [
  "ipnetwork",
  "itertools 0.14.0",
  "jsonwebtoken",
+ "k8s-openapi",
  "kube",
  "lazy_static",
  "libnmxm",

@@ -50,6 +50,34 @@ const VF_INTERCEPT_BRIDGE_SF_HBN_BRIDGE_REPRESENTOR_KEY: &str =
     "forge_vf_intercept_bridge_sf_hbn_bridge_representor";
 const VF_INTERCEPT_BRIDGE_SF_KEY: &str = "forge_vf_intercept_bridge_sf";
 
+const BFB_PATH: &str = "/public/blobs/internal/aarch64/forge.bfb";
+
+/// Resolve the BFB download URL by looking up the external LoadBalancer IP of
+/// the `carbide-pxe-external` Service. The DPU fetches the BFB over the
+/// out-of-band management network, so it needs the external IP — not an
+/// in-cluster DNS name.
+pub async fn resolve_bfb_url() -> eyre::Result<String> {
+    let client = kube::Client::try_default()
+        .await
+        .map_err(|e| eyre::eyre!("Failed to create kube client for PXE lookup: {e}"))?;
+    let services = kube::Api::<k8s_openapi::api::core::v1::Service>::namespaced(
+        client,
+        "forge-system",
+    );
+    let pxe_service = services
+        .get("carbide-pxe-external")
+        .await
+        .map_err(|e| eyre::eyre!("Failed to get carbide-pxe-external service: {e}"))?;
+    let pxe_ip = pxe_service
+        .status
+        .and_then(|s| s.load_balancer)
+        .and_then(|lb| lb.ingress)
+        .and_then(|ingress| ingress.first().cloned())
+        .and_then(|entry| entry.ip)
+        .ok_or_else(|| eyre::eyre!("carbide-pxe-external has no LoadBalancer IP"))?;
+    Ok(format!("http://{pxe_ip}{BFB_PATH}"))
+}
+
 /// Trait for DPF SDK operations used by Carbide.
 ///
 /// The DPF operator owns provisioning; Carbide declares setup (deployment, devices, node),
@@ -477,4 +505,34 @@ pub fn render_bfcfg(config: &CarbideConfig) -> eyre::Result<String> {
         .map_err(|e| eyre::eyre!("Failed to serialize bf.cfg context: {e}"))?;
     tera::Tera::one_off(BF_CFG_TEMPLATE, &tera_context, false)
         .map_err(|e| eyre::eyre!("Failed to render bf.cfg template: {e}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::tests::common::api_fixtures::get_config;
+
+    #[test]
+    fn render_bfcfg_succeeds() {
+        let config = get_config();
+        let rendered = render_bfcfg(&config)
+            .expect("render_bfcfg failed — bf.cfg template has unparseable syntax");
+
+        assert!(
+            rendered.contains("{{if .OOBNetwork}}"),
+            "Go template '{{{{if .OOBNetwork}}}}' should pass through raw"
+        );
+        assert!(
+            rendered.contains("{{.KubeadmJoinCMD}}"),
+            "Go template '{{{{.KubeadmJoinCMD}}}}' should pass through raw"
+        );
+        assert!(
+            rendered.contains("https://carbide-api.forge"),
+            "Tera variable api_url should be rendered"
+        );
+        assert!(
+            rendered.contains("http://carbide-pxe.forge"),
+            "Tera variable pxe_url should be rendered"
+        );
+    }
 }

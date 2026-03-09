@@ -335,7 +335,9 @@ async fn create_dpu_flavor<R: DpuFlavorRepository>(
     let flavor = crate::flavor::default_flavor(namespace);
     match DpuFlavorRepository::create(repo, &flavor).await {
         Ok(_) => Ok(()),
-        Err(DpfError::KubeError(kube::Error::Api(ref err))) if err.is_conflict() => {
+        Err(DpfError::KubeError(kube::Error::Api(ref err)))
+            if err.is_already_exists() || err.is_conflict() =>
+        {
             tracing::debug!("DPU flavor already exists");
             Ok(())
         }
@@ -549,7 +551,7 @@ async fn create_services_and_deployment<
                 dpu_sets: Some(vec![DpuDeploymentDpusDpuSets {
                     dpu_annotations: None,
                     dpu_selector: None,
-                    name_suffix: String::new(),
+                    name_suffix: "default".to_string(),
                     node_selector: {
                         let mut labels = BTreeMap::from([(
                             "feature.node.kubernetes.io/dpu-enabled".to_string(),
@@ -697,7 +699,9 @@ impl<R: DpuDeviceRepository, L: ResourceLabeler> DpfSdk<R, L> {
                 tracing::info!(device_name = %device_name, "Created DPU device");
                 Ok(())
             }
-            Err(DpfError::KubeError(kube::Error::Api(ref err))) if err.is_conflict() => {
+            Err(DpfError::KubeError(kube::Error::Api(ref err)))
+                if err.is_already_exists() || err.is_conflict() =>
+            {
                 tracing::debug!(device_name = %device_name, "DPU device already exists (concurrent create)");
                 Ok(())
             }
@@ -778,7 +782,9 @@ impl<R: DpuNodeRepository, L: ResourceLabeler> DpfSdk<R, L> {
                 tracing::info!(node = %node_name, "Created DPU node");
                 Ok(())
             }
-            Err(DpfError::KubeError(kube::Error::Api(ref err))) if err.is_conflict() => {
+            Err(DpfError::KubeError(kube::Error::Api(ref err)))
+                if err.is_already_exists() || err.is_conflict() =>
+            {
                 tracing::debug!(node = %node_name, "DPU node already exists (concurrent create)");
                 Ok(())
             }

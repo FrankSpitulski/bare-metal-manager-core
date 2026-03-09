@@ -375,8 +375,14 @@ pub async fn start_api(
 
         let rendered_bfcfg = crate::dpf::render_bfcfg(&carbide_config)?;
 
+        let bfb_url = if carbide_config.dpf.bfb_url.is_empty() {
+            crate::dpf::resolve_bfb_url().await?
+        } else {
+            carbide_config.dpf.bfb_url.clone()
+        };
+
         let init_config = carbide_dpf::InitDpfResourcesConfig {
-            bfb_url: carbide_config.dpf.bfb_url.clone(),
+            bfb_url,
             deployment_name: carbide_config
                 .dpf
                 .deployment_name
