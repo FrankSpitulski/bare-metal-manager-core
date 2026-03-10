@@ -26,7 +26,7 @@ use model::machine::{
 };
 
 use super::helpers::{DpuInitStateHelper, ManagedHostStateHelper, ReprovisionStateHelper};
-use super::{handler_host_power_control, host_power_state, rebooted};
+use super::{handler_host_power_control, host_power_state};
 use crate::dpf::DpfOperations;
 use crate::state_controller::machine::context::MachineStateHandlerContextObjects;
 use crate::state_controller::state_handler::{
@@ -208,37 +208,45 @@ async fn handle_dpf_provisioning(
     Ok(StateHandlerOutcome::transition(next))
 }
 
-/// Power-cycle the host (ForceOff then On). ForceRestart only resets the
-/// host CPU and will not reboot DPUs.
-///
-/// `already_requested` guards against spamming ForceOff: once we've sent
-/// it (recorded via `last_reboot_requested`), skip straight to waiting for
-/// Off then powering On. If the host is already Off (e.g. powered down
-/// externally), power it On immediately regardless of `already_requested`.
-async fn power_cycle_host(
+/// Power-cycle the host for a DPF reboot request. ForceOff then On across
+/// iterations; calls `reboot_complete` as soon as the On command is issued.
+async fn handle_dpf_reboot(
     state: &ManagedHostStateSnapshot,
+    dpu_snapshot: &Machine,
+    waiting_phase_detail: &Option<String>,
+    current_phase: &DpuPhase,
+    node_name: &str,
     ctx: &mut StateHandlerContext<'_, MachineStateHandlerContextObjects>,
-) -> Result<(), StateHandlerError> {
-    let already_requested = state
+    dpf_sdk: &dyn DpfOperations,
+) -> Result<StateHandlerOutcome<ManagedHostState>, StateHandlerError> {
+    let reboot_already_requested = state
         .host_snapshot
         .last_reboot_requested
         .as_ref()
         .is_some_and(|r| r.time > state.host_snapshot.state.version.timestamp());
 
-    let redfish_client = ctx
-        .services
-        .create_redfish_client_from_machine(&state.host_snapshot)
-        .await?;
-    let power_state = host_power_state(redfish_client.as_ref()).await?;
+    let power_state = {
+        let redfish_client = ctx
+            .services
+            .create_redfish_client_from_machine(&state.host_snapshot)
+            .await?;
+        host_power_state(redfish_client.as_ref()).await?
+    };
 
-    if !already_requested && power_state != libredfish::PowerState::Off {
-        // this will not record a new `last_reboot_requested` timestamp if the host is already Off, 
-        // even if `last_reboot_requested` is not set.
+    if !reboot_already_requested && power_state != libredfish::PowerState::Off {
         handler_host_power_control(state, ctx, SystemPowerControl::ForceOff).await?;
     } else if power_state == libredfish::PowerState::Off {
         handler_host_power_control(state, ctx, SystemPowerControl::On).await?;
+        dpf_sdk.reboot_complete(node_name).await?;
     }
-    Ok(())
+
+    update_phase_detail_or_wait(
+        state,
+        &dpu_snapshot.id,
+        waiting_phase_detail,
+        current_phase,
+        "Power cycling host for DPF reboot",
+    )
 }
 
 /// Handle DpfState::WaitingForReady: release hold, reboot handling,
@@ -257,18 +265,16 @@ async fn handle_dpf_waiting_for_ready(
     dpf_sdk.release_maintenance_hold(&node_name).await?;
 
     if dpf_sdk.is_reboot_required(&node_name).await? {
-        if rebooted(&state.host_snapshot) {
-            dpf_sdk.reboot_complete(&node_name).await?;
-        } else {
-            power_cycle_host(state, ctx).await?;
-            return update_phase_detail_or_wait(
-                state,
-                &dpu_snapshot.id,
-                waiting_phase_detail,
-                &current_phase,
-                "Waiting for host to come back after DPF reboot",
-            );
-        }
+        return handle_dpf_reboot(
+            state,
+            dpu_snapshot,
+            waiting_phase_detail,
+            &current_phase,
+            &node_name,
+            ctx,
+            dpf_sdk,
+        )
+        .await;
     }
 
     if current_phase == carbide_dpf::DpuPhase::Error {

@@ -24,8 +24,8 @@ use model::machine::{DpfState, DpuInitState, ManagedHostState};
 use tokio::time::timeout;
 
 use crate::dpf::MockDpfOperations;
-use crate::redfish::test_support::RedfishSimAction;
 use crate::redfish::RedfishClientPool;
+use crate::redfish::test_support::RedfishSimAction;
 use crate::tests::common::api_fixtures::{
     TestEnvOverrides, TestManagedHost, create_managed_host_with_dpf,
     create_test_env_with_overrides, get_config, reboot_completed,
@@ -277,7 +277,13 @@ async fn test_waiting_for_ready_idempotent_reboot(pool: sqlx::PgPool) {
     let rr = reboot_required.clone();
     mock.expect_is_reboot_required()
         .returning(move |_| Ok(rr.load(Ordering::SeqCst)));
-    // No expectation for reboot_complete: automock panics if called.
+    let rr2 = reboot_required.clone();
+    mock.expect_reboot_complete()
+        .times(1..)
+        .returning(move |_| {
+            rr2.store(false, Ordering::SeqCst);
+            Ok(())
+        });
 
     let dpf_sdk: Arc<dyn crate::dpf::DpfOperations> = Arc::new(mock);
     let mut config = get_config();
@@ -349,7 +355,7 @@ async fn test_waiting_for_ready_idempotent_reboot(pool: sqlx::PgPool) {
 }
 
 /// When the host is already Off and last_reboot_requested is None,
-/// power_cycle_host should skip ForceOff and go straight to PowerOn.
+/// the reboot handler should skip ForceOff and go straight to PowerOn.
 #[crate::sqlx_test]
 async fn test_waiting_for_ready_host_already_off(pool: sqlx::PgPool) {
     let mut mock = MockDpfOperations::new();
