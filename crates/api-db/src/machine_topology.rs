@@ -211,7 +211,7 @@ pub async fn find_machine_id_by_bmc_mac(
     txn: &mut PgConnection,
     mac_address: &str,
 ) -> Result<Option<MachineId>, DatabaseError> {
-    let query = "SELECT machine_id FROM machine_topologies WHERE topology->'bmc_info'->>'mac' = $1";
+    let query = "SELECT machine_id FROM machine_topologies WHERE LOWER(topology->'bmc_info'->>'mac') = LOWER($1)";
     sqlx::query_as(query)
         .bind(mac_address)
         .fetch_optional(txn)

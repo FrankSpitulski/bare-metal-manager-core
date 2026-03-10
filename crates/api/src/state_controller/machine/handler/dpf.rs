@@ -210,6 +210,11 @@ async fn handle_dpf_provisioning(
 
 /// Power-cycle the host (ForceOff then On). ForceRestart only resets the
 /// host CPU and will not reboot DPUs.
+///
+/// `already_requested` guards against spamming ForceOff: once we've sent
+/// it (recorded via `last_reboot_requested`), skip straight to waiting for
+/// Off then powering On. If the host is already Off (e.g. powered down
+/// externally), power it On immediately regardless of `already_requested`.
 async fn power_cycle_host(
     state: &ManagedHostStateSnapshot,
     ctx: &mut StateHandlerContext<'_, MachineStateHandlerContextObjects>,
@@ -220,17 +225,18 @@ async fn power_cycle_host(
         .as_ref()
         .is_some_and(|r| r.time > state.host_snapshot.state.version.timestamp());
 
-    if !already_requested {
+    let redfish_client = ctx
+        .services
+        .create_redfish_client_from_machine(&state.host_snapshot)
+        .await?;
+    let power_state = host_power_state(redfish_client.as_ref()).await?;
+
+    if !already_requested && power_state != libredfish::PowerState::Off {
+        // this will not record a new `last_reboot_requested` timestamp if the host is already Off, 
+        // even if `last_reboot_requested` is not set.
         handler_host_power_control(state, ctx, SystemPowerControl::ForceOff).await?;
-    } else {
-        let redfish_client = ctx
-            .services
-            .create_redfish_client_from_machine(&state.host_snapshot)
-            .await?;
-        let power_state = host_power_state(redfish_client.as_ref()).await?;
-        if power_state == libredfish::PowerState::Off {
-            handler_host_power_control(state, ctx, SystemPowerControl::On).await?;
-        }
+    } else if power_state == libredfish::PowerState::Off {
+        handler_host_power_control(state, ctx, SystemPowerControl::On).await?;
     }
     Ok(())
 }

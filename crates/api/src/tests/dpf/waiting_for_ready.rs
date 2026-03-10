@@ -25,6 +25,7 @@ use tokio::time::timeout;
 
 use crate::dpf::MockDpfOperations;
 use crate::redfish::test_support::RedfishSimAction;
+use crate::redfish::RedfishClientPool;
 use crate::tests::common::api_fixtures::{
     TestEnvOverrides, TestManagedHost, create_managed_host_with_dpf,
     create_test_env_with_overrides, get_config, reboot_completed,
@@ -344,5 +345,110 @@ async fn test_waiting_for_ready_idempotent_reboot(pool: sqlx::PgPool) {
         force_off_count2, 0,
         "No additional ForceOff should be sent while waiting for reboot, got {}",
         force_off_count2
+    );
+}
+
+/// When the host is already Off and last_reboot_requested is None,
+/// power_cycle_host should skip ForceOff and go straight to PowerOn.
+#[crate::sqlx_test]
+async fn test_waiting_for_ready_host_already_off(pool: sqlx::PgPool) {
+    let mut mock = MockDpfOperations::new();
+    expect_provisioning(&mut mock);
+
+    mock.expect_get_dpu_phase()
+        .returning(|_, _| Ok(DpuPhase::Ready));
+    mock.expect_release_maintenance_hold()
+        .times(1..)
+        .returning(|_| Ok(()));
+
+    let reboot_required = Arc::new(AtomicBool::new(false));
+    let rr = reboot_required.clone();
+    mock.expect_is_reboot_required()
+        .returning(move |_| Ok(rr.load(Ordering::SeqCst)));
+    let rr2 = reboot_required.clone();
+    mock.expect_reboot_complete()
+        .times(1..)
+        .returning(move |_| {
+            rr2.store(false, Ordering::SeqCst);
+            Ok(())
+        });
+
+    let dpf_sdk: Arc<dyn crate::dpf::DpfOperations> = Arc::new(mock);
+    let mut config = get_config();
+    config.dpf = dpf_config();
+
+    let env = create_test_env_with_overrides(
+        pool.clone(),
+        TestEnvOverrides::with_config(config).with_dpf_sdk(dpf_sdk),
+    )
+    .await;
+
+    let mh = timeout(TEST_TIMEOUT, create_managed_host_with_dpf(&env))
+        .await
+        .expect("timed out during initial provisioning");
+
+    reboot_required.store(true, Ordering::SeqCst);
+    reset_host_to_waiting_for_ready(&pool, &mh.id, &mh.dpu_ids[0]).await;
+
+    // Set the host BMC power state to Off before entering the reboot path.
+    let host_snapshot = {
+        let mut txn = env.pool.begin().await.unwrap();
+        let s = mh.host().db_machine(&mut txn).await;
+        txn.commit().await.unwrap();
+        s
+    };
+    env.redfish_sim
+        .create_client_from_machine(&host_snapshot, &env.pool)
+        .await
+        .unwrap()
+        .power(SystemPowerControl::ForceOff)
+        .await
+        .unwrap();
+
+    let redfish_timepoint = env.redfish_sim.timepoint();
+
+    timeout(TEST_TIMEOUT, async {
+        env.run_machine_state_controller_iteration().await;
+        env.run_machine_state_controller_iteration().await;
+        env.run_machine_state_controller_iteration().await;
+    })
+    .await
+    .expect("timed out during state controller iterations");
+
+    let actions = env
+        .redfish_sim
+        .actions_since(&redfish_timepoint)
+        .all_hosts();
+
+    let force_off_count = actions
+        .iter()
+        .filter(|x| matches!(x, RedfishSimAction::Power(SystemPowerControl::ForceOff)))
+        .count();
+    assert_eq!(
+        force_off_count, 0,
+        "ForceOff should NOT be sent when host is already Off, got {} in {:?}",
+        force_off_count, actions
+    );
+
+    assert!(
+        actions.contains(&RedfishSimAction::Power(SystemPowerControl::On)),
+        "Expected PowerOn to be sent for already-off host, actions: {:?}",
+        actions
+    );
+
+    reboot_completed(&env, mh.id).await;
+
+    timeout(TEST_TIMEOUT, async {
+        env.run_machine_state_controller_iteration().await;
+        env.run_machine_state_controller_iteration().await;
+    })
+    .await
+    .expect("timed out during post-reboot iterations");
+
+    let host = get_host_state(&env, &mh).await;
+    assert!(
+        !matches!(host, ManagedHostState::DPUInit { .. }),
+        "Host should have transitioned out of DPUInit, got: {:?}",
+        host
     );
 }
