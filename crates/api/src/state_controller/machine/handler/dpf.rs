@@ -39,6 +39,14 @@ fn bmc_ip(machine: &Machine) -> Result<&str, StateHandlerError> {
     })
 }
 
+fn node_id(host: &Machine) -> Result<String, StateHandlerError> {
+    crate::dpf::node_id(host).map_err(StateHandlerError::GenericError)
+}
+
+fn device_name(dpu: &Machine) -> Result<String, StateHandlerError> {
+    crate::dpf::device_name(dpu).map_err(StateHandlerError::GenericError)
+}
+
 /// Transition all DPU sub-states to the given DPF state, preserving the
 /// outer managed-host state (`DPUInit` or `DPUReprovision`).
 fn transition_all_dpus_to_dpf_state(
@@ -172,23 +180,26 @@ async fn handle_dpf_provisioning(
             .map(|x| x.product_serial.as_str())
             .unwrap_or_default();
         let device_info = carbide_dpf::DpuDeviceInfo {
-            device_name: dpu.id.to_string(),
+            device_name: device_name(dpu)?,
             dpu_bmc_ip: bmc_ip(dpu)?.to_string(),
             host_bmc_ip: bmc_ip(&state.host_snapshot)?.to_string(),
             serial_number: serial_number.to_string(),
+            host_machine_id: state.host_snapshot.id.to_string(),
+            dpu_machine_id: dpu.id.to_string(),
         };
         dpf_sdk.register_dpu_device(device_info).await?;
     }
 
-    let dpu_ids: Vec<String> = state
+    let dpu_device_names: Vec<String> = state
         .dpu_snapshots
         .iter()
-        .map(|d| d.id.to_string())
-        .collect();
+        .map(|d| device_name(d))
+        .collect::<Result<_, _>>()?;
     let node_info = carbide_dpf::DpuNodeInfo {
-        node_id: state.host_snapshot.id.to_string(),
+        node_id: node_id(&state.host_snapshot)?,
         host_bmc_ip: bmc_ip(&state.host_snapshot)?.to_string(),
-        dpu_device_names: dpu_ids,
+        dpu_device_names,
+        host_machine_id: state.host_snapshot.id.to_string(),
     };
     dpf_sdk.register_dpu_node(node_info).await?;
 
@@ -233,9 +244,9 @@ async fn handle_dpf_waiting_for_ready(
     ctx: &mut StateHandlerContext<'_, MachineStateHandlerContextObjects>,
     dpf_sdk: &dyn DpfOperations,
 ) -> Result<StateHandlerOutcome<ManagedHostState>, StateHandlerError> {
-    let node_name = dpu_node_name(&state.host_snapshot.id.to_string());
-    let device_name = dpu_snapshot.id.to_string();
-    let current_phase = dpf_sdk.get_dpu_phase(&device_name, &node_name).await?;
+    let node_name = dpu_node_name(&node_id(&state.host_snapshot)?);
+    let dpu_device_name = device_name(dpu_snapshot)?;
+    let current_phase = dpf_sdk.get_dpu_phase(&dpu_device_name, &node_name).await?;
 
     dpf_sdk.release_maintenance_hold(&node_name).await?;
 
@@ -275,16 +286,13 @@ async fn handle_dpf_waiting_for_ready(
             retry_count: 0,
         }));
     }
-    if !dpf_sdk
-        .is_dpu_device_ready(&dpu_snapshot.id.to_string())
-        .await?
-    {
+    if current_phase != carbide_dpf::DpuPhase::Ready {
         return update_phase_detail_or_wait(
             state,
             &dpu_snapshot.id,
             waiting_phase_detail,
             &current_phase,
-            "Waiting for DPU device to report ready",
+            "Waiting for DPU to reach Ready phase",
         );
     }
 
@@ -314,9 +322,9 @@ async fn handle_dpf_reprovisioning(
     dpu_snapshot: &Machine,
     dpf_sdk: &dyn DpfOperations,
 ) -> Result<StateHandlerOutcome<ManagedHostState>, StateHandlerError> {
-    let node_name = dpu_node_name(&state.host_snapshot.id.to_string());
+    let node_name = dpu_node_name(&node_id(&state.host_snapshot)?);
     dpf_sdk
-        .reprovision_dpu(&dpu_snapshot.id.to_string(), &node_name)
+        .reprovision_dpu(&device_name(dpu_snapshot)?, &node_name)
         .await?;
     let next = set_one_dpu_dpf_state(
         state,

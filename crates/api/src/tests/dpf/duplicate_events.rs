@@ -51,8 +51,6 @@ fn dpf_config() -> crate::cfg::file::DpfConfig {
 fn expect_provisioning(mock: &mut MockDpfOperations) {
     mock.expect_register_dpu_device().returning(|_| Ok(()));
     mock.expect_register_dpu_node().returning(|_| Ok(()));
-    mock.expect_get_dpu_phase()
-        .returning(|_, _| Ok(DpuPhase::Ready));
 }
 
 async fn reset_host_to_waiting_for_ready(
@@ -106,7 +104,8 @@ async fn get_host_state(
 async fn test_duplicate_ready_events_reach_ready(pool: sqlx::PgPool) {
     let mut mock = MockDpfOperations::new();
     expect_provisioning(&mut mock);
-    mock.expect_is_dpu_device_ready().returning(|_| Ok(true));
+    mock.expect_get_dpu_phase()
+        .returning(|_, _| Ok(DpuPhase::Ready));
     mock.expect_release_maintenance_hold().returning(|_| Ok(()));
     mock.expect_is_reboot_required().returning(|_| Ok(false));
 
@@ -151,10 +150,15 @@ async fn test_duplicate_reboot_events_send_single_reboot(pool: sqlx::PgPool) {
     let mut mock = MockDpfOperations::new();
     expect_provisioning(&mut mock);
 
-    let device_ready = Arc::new(AtomicBool::new(true));
-    let dr = device_ready.clone();
-    mock.expect_is_dpu_device_ready()
-        .returning(move |_| Ok(dr.load(Ordering::SeqCst)));
+    let dpu_ready = Arc::new(AtomicBool::new(true));
+    let dr = dpu_ready.clone();
+    mock.expect_get_dpu_phase().returning(move |_, _| {
+        if dr.load(Ordering::SeqCst) {
+            Ok(DpuPhase::Ready)
+        } else {
+            Ok(DpuPhase::Provisioning("OsInstalling".into()))
+        }
+    });
     mock.expect_release_maintenance_hold().returning(|_| Ok(()));
 
     let reboot_required = Arc::new(AtomicBool::new(false));
@@ -177,7 +181,7 @@ async fn test_duplicate_reboot_events_send_single_reboot(pool: sqlx::PgPool) {
         .expect("timed out during initial provisioning");
 
     reboot_required.store(true, Ordering::SeqCst);
-    device_ready.store(false, Ordering::SeqCst);
+    dpu_ready.store(false, Ordering::SeqCst);
 
     reset_host_to_waiting_for_ready(&pool, &mh.id, &mh.dpu_ids[0]).await;
 
@@ -215,7 +219,8 @@ async fn test_duplicate_events_after_reboot_complete(pool: sqlx::PgPool) {
     let mut mock = MockDpfOperations::new();
     expect_provisioning(&mut mock);
 
-    mock.expect_is_dpu_device_ready().returning(|_| Ok(true));
+    mock.expect_get_dpu_phase()
+        .returning(|_, _| Ok(DpuPhase::Ready));
     mock.expect_release_maintenance_hold().returning(|_| Ok(()));
 
     let reboot_required = Arc::new(AtomicBool::new(false));
@@ -275,17 +280,22 @@ async fn test_duplicate_events_after_reboot_complete(pool: sqlx::PgPool) {
     );
 }
 
-/// Duplicate events while the device is NOT ready. The host must stay
+/// Duplicate events while the DPU CR is NOT ready. The host must stay
 /// in DPUInit/WaitingForReady without panicking or regressing.
 #[crate::sqlx_test]
 async fn test_duplicate_events_while_not_ready(pool: sqlx::PgPool) {
     let mut mock = MockDpfOperations::new();
     expect_provisioning(&mut mock);
 
-    let device_ready = Arc::new(AtomicBool::new(true));
-    let dr = device_ready.clone();
-    mock.expect_is_dpu_device_ready()
-        .returning(move |_| Ok(dr.load(Ordering::SeqCst)));
+    let dpu_ready = Arc::new(AtomicBool::new(true));
+    let dr = dpu_ready.clone();
+    mock.expect_get_dpu_phase().returning(move |_, _| {
+        if dr.load(Ordering::SeqCst) {
+            Ok(DpuPhase::Ready)
+        } else {
+            Ok(DpuPhase::Provisioning("OsInstalling".into()))
+        }
+    });
     mock.expect_release_maintenance_hold().returning(|_| Ok(()));
     mock.expect_is_reboot_required().returning(|_| Ok(false));
 
@@ -303,11 +313,11 @@ async fn test_duplicate_events_while_not_ready(pool: sqlx::PgPool) {
         .await
         .expect("timed out during initial provisioning");
 
-    device_ready.store(false, Ordering::SeqCst);
+    dpu_ready.store(false, Ordering::SeqCst);
 
     reset_host_to_waiting_for_ready(&pool, &mh.id, &mh.dpu_ids[0]).await;
 
-    // Simulate many duplicate events while device is not ready.
+    // Simulate many duplicate events while DPU is not ready.
     timeout(TEST_TIMEOUT, async {
         for _ in 0..DUPLICATE_ITERATIONS {
             env.run_machine_state_controller_iteration().await;
@@ -319,12 +329,12 @@ async fn test_duplicate_events_while_not_ready(pool: sqlx::PgPool) {
     let host = get_host_state(&env, &mh).await;
     assert!(
         matches!(host, ManagedHostState::DPUInit { .. }),
-        "Host should remain in DPUInit while device is not ready, got: {:?}",
+        "Host should remain in DPUInit while DPU is not ready, got: {:?}",
         host
     );
 
-    // Now make device ready and run more duplicate iterations.
-    device_ready.store(true, Ordering::SeqCst);
+    // Now make DPU ready and run more duplicate iterations.
+    dpu_ready.store(true, Ordering::SeqCst);
 
     timeout(TEST_TIMEOUT, async {
         for _ in 0..DUPLICATE_ITERATIONS {
@@ -337,7 +347,7 @@ async fn test_duplicate_events_while_not_ready(pool: sqlx::PgPool) {
     let host = get_host_state(&env, &mh).await;
     assert!(
         !matches!(host, ManagedHostState::DPUInit { .. }),
-        "Host should have transitioned out of DPUInit after device became ready, got: {:?}",
+        "Host should have transitioned out of DPUInit after DPU became ready, got: {:?}",
         host
     );
 }

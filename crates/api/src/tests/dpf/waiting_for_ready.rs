@@ -33,11 +33,11 @@ use crate::tests::common::api_fixtures::{
 const TEST_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Set up the initial provisioning expectations shared by all WaitingForReady tests.
+/// Does NOT set up `get_dpu_phase` -- each test configures it to control the
+/// DPU CR phase (the authoritative readiness signal).
 fn expect_provisioning(mock: &mut MockDpfOperations) {
     mock.expect_register_dpu_device().returning(|_| Ok(()));
     mock.expect_register_dpu_node().returning(|_| Ok(()));
-    mock.expect_get_dpu_phase()
-        .returning(|_, _| Ok(DpuPhase::Ready));
 }
 
 fn dpf_config() -> crate::cfg::file::DpfConfig {
@@ -102,7 +102,8 @@ async fn test_waiting_for_ready_reboot_flow(pool: sqlx::PgPool) {
     let mut mock = MockDpfOperations::new();
     expect_provisioning(&mut mock);
 
-    mock.expect_is_dpu_device_ready().returning(|_| Ok(true));
+    mock.expect_get_dpu_phase()
+        .returning(|_, _| Ok(DpuPhase::Ready));
     mock.expect_release_maintenance_hold()
         .times(1..)
         .returning(|_| Ok(()));
@@ -181,21 +182,25 @@ async fn test_waiting_for_ready_reboot_flow(pool: sqlx::PgPool) {
 }
 
 /// WaitingForReady without reboot: enters maintenance, releases hold,
-/// waits for device ready, then transitions.
+/// waits for DPU CR to reach Ready phase, then transitions.
 #[crate::sqlx_test]
 async fn test_waiting_for_ready_no_reboot(pool: sqlx::PgPool) {
     let mut mock = MockDpfOperations::new();
     expect_provisioning(&mut mock);
 
-    let device_ready = Arc::new(AtomicBool::new(true));
-    let dr = device_ready.clone();
-    mock.expect_is_dpu_device_ready()
-        .returning(move |_| Ok(dr.load(Ordering::SeqCst)));
+    let dpu_ready = Arc::new(AtomicBool::new(true));
+    let dr = dpu_ready.clone();
+    mock.expect_get_dpu_phase().returning(move |_, _| {
+        if dr.load(Ordering::SeqCst) {
+            Ok(DpuPhase::Ready)
+        } else {
+            Ok(DpuPhase::Provisioning("OsInstalling".into()))
+        }
+    });
     mock.expect_release_maintenance_hold()
         .times(1..)
         .returning(|_| Ok(()));
     mock.expect_is_reboot_required().returning(|_| Ok(false));
-    // No expectation for reboot_complete: automock panics if called.
 
     let dpf_sdk: Arc<dyn crate::dpf::DpfOperations> = Arc::new(mock);
     let mut config = get_config();
@@ -211,7 +216,7 @@ async fn test_waiting_for_ready_no_reboot(pool: sqlx::PgPool) {
         .await
         .expect("timed out during initial provisioning");
 
-    device_ready.store(false, Ordering::SeqCst);
+    dpu_ready.store(false, Ordering::SeqCst);
 
     reset_host_to_waiting_for_ready(&pool, &mh.id, &mh.dpu_ids[0]).await;
 
@@ -226,11 +231,11 @@ async fn test_waiting_for_ready_no_reboot(pool: sqlx::PgPool) {
     let host = get_host_state(&env, &mh).await;
     assert!(
         matches!(host, ManagedHostState::DPUInit { .. }),
-        "Host should still be in DPUInit waiting for device, got: {:?}",
+        "Host should still be in DPUInit waiting for DPU Ready phase, got: {:?}",
         host
     );
 
-    device_ready.store(true, Ordering::SeqCst);
+    dpu_ready.store(true, Ordering::SeqCst);
 
     timeout(TEST_TIMEOUT, async {
         env.run_machine_state_controller_iteration().await;
@@ -242,7 +247,7 @@ async fn test_waiting_for_ready_no_reboot(pool: sqlx::PgPool) {
     let host = get_host_state(&env, &mh).await;
     assert!(
         !matches!(host, ManagedHostState::DPUInit { .. }),
-        "Host should have transitioned out of DPUInit after device ready, got: {:?}",
+        "Host should have transitioned out of DPUInit after DPU Ready, got: {:?}",
         host
     );
 }
@@ -255,10 +260,15 @@ async fn test_waiting_for_ready_idempotent_reboot(pool: sqlx::PgPool) {
     expect_provisioning(&mut mock);
 
     // Starts true so initial provisioning completes, flipped to false for the test phase.
-    let device_ready = Arc::new(AtomicBool::new(true));
-    let dr = device_ready.clone();
-    mock.expect_is_dpu_device_ready()
-        .returning(move |_| Ok(dr.load(Ordering::SeqCst)));
+    let dpu_ready = Arc::new(AtomicBool::new(true));
+    let dr = dpu_ready.clone();
+    mock.expect_get_dpu_phase().returning(move |_, _| {
+        if dr.load(Ordering::SeqCst) {
+            Ok(DpuPhase::Ready)
+        } else {
+            Ok(DpuPhase::Provisioning("OsInstalling".into()))
+        }
+    });
     mock.expect_release_maintenance_hold().returning(|_| Ok(()));
 
     // Starts false so initial provisioning completes, flipped to true for the test phase.
@@ -283,7 +293,7 @@ async fn test_waiting_for_ready_idempotent_reboot(pool: sqlx::PgPool) {
         .expect("timed out during initial provisioning");
 
     reboot_required.store(true, Ordering::SeqCst);
-    device_ready.store(false, Ordering::SeqCst);
+    dpu_ready.store(false, Ordering::SeqCst);
 
     reset_host_to_waiting_for_ready(&pool, &mh.id, &mh.dpu_ids[0]).await;
 

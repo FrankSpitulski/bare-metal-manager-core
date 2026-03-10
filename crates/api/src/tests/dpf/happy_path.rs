@@ -29,7 +29,6 @@ use crate::tests::common::api_fixtures::{
 fn default_mock() -> MockDpfOperations {
     let mut mock = MockDpfOperations::new();
     mock.expect_register_dpu_device().returning(|_| Ok(()));
-    mock.expect_is_dpu_device_ready().returning(|_| Ok(true));
     mock.expect_register_dpu_node().returning(|_| Ok(()));
     mock.expect_release_maintenance_hold().returning(|_| Ok(()));
     mock.expect_is_reboot_required().returning(|_| Ok(false));

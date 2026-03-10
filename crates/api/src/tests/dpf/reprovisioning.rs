@@ -37,17 +37,20 @@ const TEST_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Build a `MockDpfOperations` with only the expectations needed for the
 /// initial provisioning flow triggered by `create_managed_host_with_dpf`.
-/// `device_ready` controls the return value of `is_dpu_device_ready`.
-fn provisioning_mock(device_ready: Arc<AtomicBool>) -> MockDpfOperations {
+/// `dpu_ready` controls whether `get_dpu_phase` returns `Ready` or `Provisioning`.
+fn provisioning_mock(dpu_ready: Arc<AtomicBool>) -> MockDpfOperations {
     let mut mock = MockDpfOperations::new();
     mock.expect_register_dpu_device().returning(|_| Ok(()));
-    mock.expect_is_dpu_device_ready()
-        .returning(move |_| Ok(device_ready.load(Ordering::SeqCst)));
     mock.expect_register_dpu_node().returning(|_| Ok(()));
     mock.expect_release_maintenance_hold().returning(|_| Ok(()));
     mock.expect_is_reboot_required().returning(|_| Ok(false));
-    mock.expect_get_dpu_phase()
-        .returning(|_, _| Ok(DpuPhase::Ready));
+    mock.expect_get_dpu_phase().returning(move |_, _| {
+        if dpu_ready.load(Ordering::SeqCst) {
+            Ok(DpuPhase::Ready)
+        } else {
+            Ok(DpuPhase::Provisioning("OsInstalling".into()))
+        }
+    });
     mock
 }
 
@@ -310,7 +313,7 @@ async fn test_dpf_waiting_for_ready_exits_to_powering_off_host_during_reprovisio
 /// Build a capturing mock that records device names from `register_dpu_device`
 /// and `reprovision_dpu`.
 fn capturing_mock(
-    device_ready: Arc<AtomicBool>,
+    dpu_ready: Arc<AtomicBool>,
     registered_devices: Arc<Mutex<Vec<String>>>,
     reprovisioned_devices: Arc<Mutex<Vec<String>>>,
 ) -> MockDpfOperations {
@@ -321,20 +324,22 @@ fn capturing_mock(
         Ok(())
     });
 
-    let reprovisioned_for_ready = reprovisioned_devices.clone();
-    mock.expect_is_dpu_device_ready()
-        .returning(move |device_name| {
-            let ready_global = device_ready.load(Ordering::SeqCst);
-            let repro = reprovisioned_for_ready.lock().unwrap();
-            let ready_if_reprovisioned = repro.iter().any(|d| d == device_name);
-            Ok(ready_global || ready_if_reprovisioned)
-        });
-
     mock.expect_register_dpu_node().returning(|_| Ok(()));
     mock.expect_release_maintenance_hold().returning(|_| Ok(()));
     mock.expect_is_reboot_required().returning(|_| Ok(false));
+
+    let reprovisioned_for_ready = reprovisioned_devices.clone();
     mock.expect_get_dpu_phase()
-        .returning(|_, _| Ok(DpuPhase::Ready));
+        .returning(move |device_name, _| {
+            let ready_global = dpu_ready.load(Ordering::SeqCst);
+            let repro = reprovisioned_for_ready.lock().unwrap();
+            let ready_if_reprovisioned = repro.iter().any(|d| d == device_name);
+            if ready_global || ready_if_reprovisioned {
+                Ok(DpuPhase::Ready)
+            } else {
+                Ok(DpuPhase::Provisioning("OsInstalling".into()))
+            }
+        });
 
     mock.expect_reprovision_dpu()
         .returning(move |device_name, _| {

@@ -148,7 +148,9 @@ impl ServiceDefinition {
 /// Information about a DPU device (DPUDevice CR).
 #[derive(Debug, Clone)]
 pub struct DpuDeviceInfo {
-    /// Name of the DPU device (DPUDevice CR name; matches operator label dpudevice-name).
+    /// Name of the DPU device (DPUDevice CR name). Should be a compact
+    /// identifier derived from the DPU's BMC MAC address (e.g. `01-02-03-04-05-06`)
+    /// to stay within the 48-char K8s resource name limit.
     pub device_name: String,
     /// BMC IP address for the DPU.
     pub dpu_bmc_ip: String,
@@ -156,17 +158,28 @@ pub struct DpuDeviceInfo {
     pub host_bmc_ip: String,
     /// Serial number of the DPU.
     pub serial_number: String,
+    /// Caller-defined identifier for the host machine (e.g. Carbide MachineId).
+    /// Passed through to the labeler for resource labels.
+    pub host_machine_id: String,
+    /// Caller-defined identifier for the DPU machine (e.g. Carbide MachineId).
+    /// Passed through to the labeler for resource labels.
+    pub dpu_machine_id: String,
 }
 
 /// Information about a DPU node (host with DPUs).
 #[derive(Debug, Clone)]
 pub struct DpuNodeInfo {
-    /// Stable identifier for the node (e.g. host machine ID).
+    /// Stable identifier for the node, derived from the host's BMC MAC address
+    /// (e.g. `01-02-03-04-05-06`). Used to build the DPUNode resource name.
     pub node_id: String,
     /// BMC IP of the host.
     pub host_bmc_ip: String,
     /// Names of the DPU devices (DPUDevice CR names) attached to this node.
+    /// Each should be a BMC MAC-derived identifier.
     pub dpu_device_names: Vec<String>,
+    /// Caller-defined identifier for the host machine (e.g. Carbide MachineId).
+    /// Passed through to the labeler for contextual node labels.
+    pub host_machine_id: String,
 }
 
 /// Phase of DPU lifecycle.

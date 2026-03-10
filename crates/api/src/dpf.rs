@@ -13,7 +13,6 @@
 //! DPF SDK trait abstraction for testability.
 
 use std::collections::{BTreeMap, HashMap};
-use std::str::FromStr;
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -21,7 +20,6 @@ use carbide_dpf::{
     BmcPasswordProvider, DpfError, DpfSdk, DpuDeviceInfo, DpuNodeInfo, DpuPhase, DpuWatcher,
     KubeRepository, ResourceLabeler, node_id_from_node_name,
 };
-use carbide_uuid::machine::MachineId;
 use sqlx::PgPool;
 
 use crate::cfg::file::CarbideConfig;
@@ -60,10 +58,8 @@ pub async fn resolve_bfb_url() -> eyre::Result<String> {
     let client = kube::Client::try_default()
         .await
         .map_err(|e| eyre::eyre!("Failed to create kube client for PXE lookup: {e}"))?;
-    let services = kube::Api::<k8s_openapi::api::core::v1::Service>::namespaced(
-        client,
-        "forge-system",
-    );
+    let services =
+        kube::Api::<k8s_openapi::api::core::v1::Service>::namespaced(client, "forge-system");
     let pxe_service = services
         .get("carbide-pxe-external")
         .await
@@ -78,6 +74,32 @@ pub async fn resolve_bfb_url() -> eyre::Result<String> {
     Ok(format!("http://{pxe_ip}{BFB_PATH}"))
 }
 
+/// Convert a MAC address into a lowercase, hyphen-separated identifier
+/// suitable for use in K8s resource names (RFC 1123 subdomain).
+/// e.g. `9C:63:C0:E6:B4:3D` → `9c-63-c0-e6-b4-3d`.
+fn mac_to_k8s_name(mac: mac_address::MacAddress) -> String {
+    mac.to_string().to_lowercase().replace(':', "-")
+}
+
+fn bmc_mac_k8s_name(machine: &model::machine::Machine) -> eyre::Result<String> {
+    let mac = machine
+        .bmc_info
+        .mac
+        .ok_or_else(|| eyre::eyre!("BMC MAC is not set for machine {}", machine.id))?;
+    Ok(mac_to_k8s_name(mac))
+}
+
+/// Derive the DPUNode `node_id` from a host machine's BMC MAC address.
+/// Fed into `dpu_node_name()` to produce the full DPUNode resource name.
+pub fn node_id(host: &model::machine::Machine) -> eyre::Result<String> {
+    bmc_mac_k8s_name(host)
+}
+
+/// Derive the DPUDevice name from a DPU machine's BMC MAC address.
+pub fn device_name(dpu: &model::machine::Machine) -> eyre::Result<String> {
+    bmc_mac_k8s_name(dpu)
+}
+
 /// Trait for DPF SDK operations used by Carbide.
 ///
 /// The DPF operator owns provisioning; Carbide declares setup (deployment, devices, node),
@@ -90,9 +112,6 @@ pub async fn resolve_bfb_url() -> eyre::Result<String> {
 pub trait DpfOperations: Send + Sync + std::fmt::Debug {
     /// Register a DPU device.
     async fn register_dpu_device(&self, info: DpuDeviceInfo) -> Result<(), DpfError>;
-
-    /// Check if a DPU device is ready.
-    async fn is_dpu_device_ready(&self, dpu_device_name: &str) -> Result<bool, DpfError>;
 
     /// Register a DPU node.
     async fn register_dpu_node(&self, info: DpuNodeInfo) -> Result<(), DpfError>;
@@ -149,6 +168,13 @@ pub trait DpfOperations: Send + Sync + std::fmt::Debug {
 }
 
 /// Applies carbide-specific labels to DPF resources.
+///
+/// Label inheritance in DPF:
+/// - DPUDevice labels propagate to the DPU CR created by the operator.
+/// - DPUNode static labels (`node_labels`) are used by DPUDeployment's
+///   `dpuNodeSelector` to match nodes, and also propagate to DPU CRs.
+/// - DPUNode contextual labels (`node_context_labels`) are only set at
+///   creation and propagate to DPU CRs, but are not part of selectors.
 pub struct CarbideDPFLabeler;
 
 impl ResourceLabeler for CarbideDPFLabeler {
@@ -162,13 +188,34 @@ impl ResourceLabeler for CarbideDPFLabeler {
                 "carbide.nvidia.com/host-bmc-ip".to_string(),
                 info.host_bmc_ip.clone(),
             ),
+            (
+                "carbide.nvidia.com/host-machine-id".to_string(),
+                info.host_machine_id.clone(),
+            ),
+            (
+                "carbide.nvidia.com/dpu-machine-id".to_string(),
+                info.dpu_machine_id.clone(),
+            ),
         ])
     }
 
     fn node_labels(&self) -> BTreeMap<String, String> {
+        BTreeMap::from([
+            (
+                "carbide.nvidia.com/controlled.node.v1".to_string(),
+                "true".to_string(),
+            ),
+            (
+                "feature.node.kubernetes.io/dpu-enabled".to_string(),
+                "true".to_string(),
+            ),
+        ])
+    }
+
+    fn node_context_labels(&self, info: &DpuNodeInfo) -> BTreeMap<String, String> {
         BTreeMap::from([(
-            "carbide.nvidia.com/controlled.node.v1".to_string(),
-            "true".to_string(),
+            "carbide.nvidia.com/host-machine-id".to_string(),
+            info.host_machine_id.clone(),
         )])
     }
 
@@ -292,12 +339,27 @@ impl DpfSdkOps {
 }
 
 /// Look up a host by DPUNode name and enqueue it for state handling.
-/// Node name format: "dpu-node-{host_machine_id}".
+/// Node name format: `dpu-node-{bmc_mac_id}`, where `bmc_mac_id` is the host's
+/// BMC MAC address with colons replaced by hyphens.
 async fn enqueue_host(db_pool: &PgPool, node_name: &str, reason: &str) -> Result<(), DpfError> {
-    let node_id = node_id_from_node_name(node_name);
+    let bmc_mac_id = node_id_from_node_name(node_name);
+    let bmc_mac = bmc_mac_id.replace('-', ":");
 
-    let host_machine_id = MachineId::from_str(node_id)
-        .map_err(|e| DpfError::InvalidState(format!("Invalid node_id: {node_id}: {e}")))?;
+    let host_machine_id = {
+        let mut conn = db_pool.acquire().await.map_err(|e| {
+            DpfError::InvalidState(format!("Failed to acquire database connection: {e}"))
+        })?;
+        db::machine_topology::find_machine_id_by_bmc_mac(&mut conn, &bmc_mac)
+            .await
+            .map_err(|e| {
+                DpfError::InvalidState(format!("DB error looking up host by BMC MAC: {e}"))
+            })?
+    };
+
+    let Some(host_machine_id) = host_machine_id else {
+        tracing::warn!(node = %node_name, bmc_mac, reason, "Could not find host for DPF node");
+        return Ok(());
+    };
 
     let host = {
         let mut conn = db_pool.acquire().await.map_err(|e| {
@@ -339,10 +401,6 @@ impl std::fmt::Debug for DpfSdkOps {
 impl DpfOperations for DpfSdkOps {
     async fn register_dpu_device(&self, info: DpuDeviceInfo) -> Result<(), DpfError> {
         self.sdk.register_dpu_device(info).await
-    }
-
-    async fn is_dpu_device_ready(&self, dpu_device_name: &str) -> Result<bool, DpfError> {
-        self.sdk.is_dpu_device_ready(dpu_device_name).await
     }
 
     async fn register_dpu_node(&self, info: DpuNodeInfo) -> Result<(), DpfError> {

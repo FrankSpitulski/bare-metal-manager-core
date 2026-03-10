@@ -485,20 +485,26 @@ pub(crate) async fn admin_force_delete_machine(
                     machine.id
                 );
             }
-
-            if let Some(ref ops) = api.dpf_sdk
-                && !response.dpu_machine_ids.is_empty()
-            {
-                let node_name = carbide_dpf::dpu_node_name(&machine.id.to_string());
-                ops.force_delete_host(&node_name, &response.dpu_machine_ids)
-                    .await
-                    .map_err(CarbideError::DpfError)?;
-            }
         } else {
             tracing::warn!(
                 "Failed to unlock this host because Forge could not retrieve the BMC IP address for machine {}",
                 machine.id
             );
+        }
+
+        if let Some(ref ops) = api.dpf_sdk
+            && !dpu_machines.is_empty()
+        {
+            let node_name = carbide_dpf::dpu_node_name(
+                &crate::dpf::node_id(machine).map_err(CarbideError::GenericErrorFromReport)?,
+            );
+            let dpu_device_names: Vec<String> = dpu_machines
+                .iter()
+                .map(|d| crate::dpf::device_name(d).map_err(CarbideError::GenericErrorFromReport))
+                .collect::<Result<_, _>>()?;
+            ops.force_delete_host(&node_name, &dpu_device_names)
+                .await
+                .map_err(CarbideError::DpfError)?;
         }
     }
 

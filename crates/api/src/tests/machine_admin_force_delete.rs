@@ -722,28 +722,29 @@ async fn test_admin_force_delete_with_instance_type(pool: sqlx::PgPool) {
     _ = force_delete(&env, &tmp_machine_id);
 }
 
-/// Force delete with DPF: the node_name passed to force_delete_host must
-/// use the host machine ID, not a DPU machine ID.
+/// Force delete with DPF: the node_name and dpu_device_names passed to
+/// force_delete_host must use BMC MAC addresses, not 64-char MachineIds,
+/// so that the resulting K8s resource names stay within the 48-char limit.
 #[crate::sqlx_test]
-async fn test_admin_force_delete_with_dpf_uses_host_machine_id(pool: sqlx::PgPool) {
-    let captured_node_names: Arc<std::sync::Mutex<Vec<String>>> =
+async fn test_admin_force_delete_with_dpf_uses_bmc_mac(pool: sqlx::PgPool) {
+    let captured_calls: Arc<std::sync::Mutex<Vec<(String, Vec<String>)>>> =
         Arc::new(std::sync::Mutex::new(Vec::new()));
 
     let mut mock = crate::dpf::MockDpfOperations::new();
 
     mock.expect_register_dpu_device().returning(|_| Ok(()));
-    mock.expect_is_dpu_device_ready().returning(|_| Ok(true));
     mock.expect_register_dpu_node().returning(|_| Ok(()));
     mock.expect_release_maintenance_hold().returning(|_| Ok(()));
     mock.expect_is_reboot_required().returning(|_| Ok(false));
     mock.expect_get_dpu_phase()
         .returning(|_, _| Ok(carbide_dpf::DpuPhase::Ready));
 
-    // Force delete path
-    let cap = captured_node_names.clone();
+    let cap = captured_calls.clone();
     mock.expect_force_delete_host()
-        .returning(move |node_name, _| {
-            cap.lock().unwrap().push(node_name.to_string());
+        .returning(move |node_name, device_names| {
+            cap.lock()
+                .unwrap()
+                .push((node_name.to_string(), device_names.to_vec()));
             Ok(())
         });
 
@@ -769,7 +770,6 @@ async fn test_admin_force_delete_with_dpf_uses_host_machine_id(pool: sqlx::PgPoo
     .await
     .expect("timed out during initial provisioning");
     let host_id = mh.id;
-    let dpu_ids = mh.dpu_ids.clone();
 
     tokio::time::timeout(
         std::time::Duration::from_secs(30),
@@ -778,20 +778,34 @@ async fn test_admin_force_delete_with_dpf_uses_host_machine_id(pool: sqlx::PgPoo
     .await
     .expect("timed out during force_delete");
 
-    let captured = captured_node_names.lock().unwrap().clone();
+    let calls = captured_calls.lock().unwrap().clone();
     assert_eq!(
-        captured.len(),
+        calls.len(),
         1,
-        "force_delete_host should have been called exactly once, got: {captured:?}"
+        "force_delete_host should have been called exactly once, got: {calls:?}"
     );
 
-    let expected_node_name = carbide_dpf::dpu_node_name(&host_id.to_string());
-    assert_eq!(
-        captured[0], expected_node_name,
-        "node_name should use host machine ID, not DPU machine ID.\n\
-         Expected: {expected_node_name}\n\
-         Got: {}\n\
-         DPU IDs: {dpu_ids:?}",
-        captured[0]
+    let (node_name, device_names) = &calls[0];
+
+    assert!(
+        node_name.starts_with("dpu-node-"),
+        "node_name should start with 'dpu-node-', got: {node_name}",
     );
+    assert!(
+        node_name.len() <= 48,
+        "node_name must be <= 48 chars for DPUNode CRD, got {} chars: {node_name}",
+        node_name.len(),
+    );
+
+    for name in device_names {
+        assert!(
+            name.len() <= 48,
+            "dpu device name must be <= 48 chars, got {} chars: {name}",
+            name.len(),
+        );
+        assert!(
+            name.contains('-'),
+            "dpu device name should be a MAC-derived id (contain hyphens), got: {name}",
+        );
+    }
 }

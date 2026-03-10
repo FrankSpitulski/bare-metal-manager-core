@@ -18,6 +18,7 @@ use std::time::Duration;
 
 use kube::core::ObjectMeta;
 use serde_json::json;
+use sha2::{Digest, Sha256};
 
 use crate::crds::bfbs_generated::{BFB, BfbSpec};
 use crate::crds::dpudeployments_generated::{
@@ -75,10 +76,17 @@ pub trait ResourceLabeler: Send + Sync {
         BTreeMap::new()
     }
 
-    /// Labels to apply to DPUNode resources on creation.
+    /// Static labels applied to DPUNode resources on creation.
     /// Also used as the `dpu_node_selector` in DPUDeployment
     /// and removed on node deletion.
     fn node_labels(&self) -> BTreeMap<String, String> {
+        BTreeMap::new()
+    }
+
+    /// Contextual labels applied to DPUNode resources on creation only.
+    /// Unlike `node_labels`, these are NOT used for selectors or removal
+    /// patches — they carry per-registration metadata (e.g. machine IDs).
+    fn node_context_labels(&self, _info: &DpuNodeInfo) -> BTreeMap<String, String> {
         BTreeMap::new()
     }
 
@@ -278,12 +286,17 @@ async fn refresh_bmc_secret_if_changed<R: K8sConfigRepository>(
 }
 
 /// DPUNode name used by the DPF operator: `dpu-node-{node_id}`.
-/// `node_id` is a stable host identifier (e.g. host machine UUID), not an IP.
+/// `node_id` should be a compact, stable host identifier derived from the
+/// host's BMC MAC address (e.g. `01-02-03-04-05-06`), not a full MachineId.
+/// The DPF CRD limits resource names to 48 characters.
 pub fn dpu_node_name(node_id: &str) -> String {
     format!("dpu-node-{}", node_id)
 }
 
 /// DPU resource name: `dpu-node-{node_id}-{dpu_device_name}`.
+/// Both `node_id` and `dpu_device_name` should be compact identifiers derived
+/// from BMC MAC addresses to keep the combined name within the 48-char K8s
+/// resource name limit.
 pub fn dpu_name(dpu_device_name: &str, node_id: &str) -> String {
     format!("dpu-node-{}-{}", node_id, dpu_device_name)
 }
@@ -311,7 +324,12 @@ async fn create_bfb<R: BfbRepository>(
     namespace: &str,
     bfb_url: &str,
 ) -> Result<String, DpfError> {
-    let bfb_name = format!("{}-{}", BFB_NAME_PREFIX, uuid::Uuid::new_v4());
+    let bfb_name = format!(
+        "{}-{:x}",
+        BFB_NAME_PREFIX,
+        Sha256::digest(bfb_url.as_bytes())
+    );
+
     let bfb = BFB {
         metadata: ObjectMeta {
             name: Some(bfb_name.clone()),
@@ -324,8 +342,16 @@ async fn create_bfb<R: BfbRepository>(
         },
         status: None,
     };
-    BfbRepository::create(repo, &bfb).await?;
-    Ok(bfb_name)
+    match BfbRepository::create(repo, &bfb).await {
+        Ok(_) => Ok(bfb_name),
+        Err(DpfError::KubeError(kube::Error::Api(ref err)))
+            if err.is_already_exists() || err.is_conflict() =>
+        {
+            tracing::debug!(bfb = %bfb_name, "BFB already exists, reusing");
+            Ok(bfb_name)
+        }
+        Err(e) => Err(e),
+    }
 }
 
 async fn create_dpu_flavor<R: DpuFlavorRepository>(
@@ -338,6 +364,18 @@ async fn create_dpu_flavor<R: DpuFlavorRepository>(
         Err(DpfError::KubeError(kube::Error::Api(ref err)))
             if err.is_already_exists() || err.is_conflict() =>
         {
+            let existing =
+                DpuFlavorRepository::get(repo, crate::flavor::DPUFLAVOR_NAME, namespace).await?;
+            if existing
+                .as_ref()
+                .is_some_and(|f| f.metadata.deletion_timestamp.is_some())
+            {
+                return Err(DpfError::InvalidState(format!(
+                    "DPUFlavor {} is being deleted (has deletionTimestamp); \
+                     cannot re-create until the old resource is fully removed",
+                    crate::flavor::DPUFLAVOR_NAME
+                )));
+            }
             tracing::debug!("DPU flavor already exists");
             Ok(())
         }
@@ -702,32 +740,22 @@ impl<R: DpuDeviceRepository, L: ResourceLabeler> DpfSdk<R, L> {
             Err(DpfError::KubeError(kube::Error::Api(ref err)))
                 if err.is_already_exists() || err.is_conflict() =>
             {
+                let existing =
+                    DpuDeviceRepository::get(&*self.repo, &device_name, &self.namespace).await?;
+                if existing
+                    .as_ref()
+                    .is_some_and(|d| d.metadata.deletion_timestamp.is_some())
+                {
+                    return Err(DpfError::InvalidState(format!(
+                        "DPUDevice {device_name} is being deleted (has deletionTimestamp); \
+                         cannot re-register until the old resource is fully removed"
+                    )));
+                }
                 tracing::debug!(device_name = %device_name, "DPU device already exists (concurrent create)");
                 Ok(())
             }
             Err(e) => Err(e),
         }
-    }
-
-    /// Check if a DPU device is ready.
-    pub async fn is_dpu_device_ready(&self, dpu_device_name: &str) -> Result<bool, DpfError> {
-        let device =
-            DpuDeviceRepository::get(&*self.repo, dpu_device_name, &self.namespace).await?;
-        let Some(device) = device else {
-            return Err(DpfError::not_found("DPUDevice", dpu_device_name));
-        };
-
-        let Some(status) = device.status else {
-            return Ok(false);
-        };
-
-        let Some(conditions) = status.conditions else {
-            return Ok(false);
-        };
-
-        Ok(conditions
-            .iter()
-            .any(|c| c.type_ == "Ready" && c.status == "True"))
     }
 
     /// Delete a DPU device.
@@ -750,7 +778,8 @@ impl<R: DpuNodeRepository, L: ResourceLabeler> DpfSdk<R, L> {
                 name: Some(node_name.clone()),
                 namespace: Some(self.namespace.clone()),
                 labels: {
-                    let labels = self.labeler.node_labels();
+                    let mut labels = self.labeler.node_labels();
+                    labels.extend(self.labeler.node_context_labels(&info));
                     if labels.is_empty() {
                         None
                     } else {
@@ -785,6 +814,17 @@ impl<R: DpuNodeRepository, L: ResourceLabeler> DpfSdk<R, L> {
             Err(DpfError::KubeError(kube::Error::Api(ref err)))
                 if err.is_already_exists() || err.is_conflict() =>
             {
+                let existing =
+                    DpuNodeRepository::get(&*self.repo, &node_name, &self.namespace).await?;
+                if existing
+                    .as_ref()
+                    .is_some_and(|n| n.metadata.deletion_timestamp.is_some())
+                {
+                    return Err(DpfError::InvalidState(format!(
+                        "DPUNode {node_name} is being deleted (has deletionTimestamp); \
+                         cannot re-register until the old resource is fully removed"
+                    )));
+                }
                 tracing::debug!(node = %node_name, "DPU node already exists (concurrent create)");
                 Ok(())
             }
@@ -1024,9 +1064,19 @@ mod tests {
     use kube::Resource;
 
     use super::*;
+    use crate::crds::dpuflavors_generated::DPUFlavor;
     use crate::crds::dpus_generated::DPU;
-    use crate::repository::{DpuDeviceRepository, DpuNodeRepository, DpuRepository};
+    use crate::repository::{
+        DpuDeviceRepository, DpuFlavorRepository, DpuNodeRepository, DpuRepository,
+    };
     use crate::types::{DpuDeviceInfo, DpuNodeInfo};
+
+    fn already_exists_error(name: &str) -> DpfError {
+        DpfError::KubeError(kube::Error::Api(Box::new(
+            kube::core::Status::failure(&format!("{name} already exists"), "AlreadyExists")
+                .with_code(409),
+        )))
+    }
 
     const TEST_NAMESPACE: &str = "test-namespace";
 
@@ -1035,6 +1085,7 @@ mod tests {
         devices: Arc<RwLock<BTreeMap<String, DPUDevice>>>,
         nodes: Arc<RwLock<BTreeMap<String, DPUNode>>>,
         dpus: Arc<RwLock<BTreeMap<String, DPU>>>,
+        flavors: Arc<RwLock<BTreeMap<String, DPUFlavor>>>,
     }
 
     impl SdkMock {
@@ -1076,10 +1127,12 @@ mod tests {
                 .collect())
         }
         async fn create(&self, d: &DPUDevice) -> Result<DPUDevice, DpfError> {
-            self.devices
-                .write()
-                .unwrap()
-                .insert(Self::key(d), d.clone());
+            let key = Self::key(d);
+            let mut devices = self.devices.write().unwrap();
+            if devices.contains_key(&key) {
+                return Err(already_exists_error(d.meta().name.as_deref().unwrap_or("")));
+            }
+            devices.insert(key, d.clone());
             Ok(d.clone())
         }
         async fn delete(&self, name: &str, ns: &str) -> Result<(), DpfError> {
@@ -1112,7 +1165,12 @@ mod tests {
                 .collect())
         }
         async fn create(&self, n: &DPUNode) -> Result<DPUNode, DpfError> {
-            self.nodes.write().unwrap().insert(Self::key(n), n.clone());
+            let key = Self::key(n);
+            let mut nodes = self.nodes.write().unwrap();
+            if nodes.contains_key(&key) {
+                return Err(already_exists_error(n.meta().name.as_deref().unwrap_or("")));
+            }
+            nodes.insert(key, n.clone());
             Ok(n.clone())
         }
         async fn patch(
@@ -1241,6 +1299,27 @@ mod tests {
         }
     }
 
+    #[async_trait]
+    impl DpuFlavorRepository for SdkMock {
+        async fn get(&self, name: &str, ns: &str) -> Result<Option<DPUFlavor>, DpfError> {
+            Ok(self
+                .flavors
+                .read()
+                .unwrap()
+                .get(&Self::ns_key(ns, name))
+                .cloned())
+        }
+        async fn create(&self, f: &DPUFlavor) -> Result<DPUFlavor, DpfError> {
+            let key = Self::key(f);
+            let mut flavors = self.flavors.write().unwrap();
+            if flavors.contains_key(&key) {
+                return Err(already_exists_error(f.meta().name.as_deref().unwrap_or("")));
+            }
+            flavors.insert(key, f.clone());
+            Ok(f.clone())
+        }
+    }
+
     #[tokio::test]
     async fn test_register_dpu_device() {
         let mock = SdkMock::new();
@@ -1254,6 +1333,8 @@ mod tests {
             dpu_bmc_ip: "10.0.0.10".to_string(),
             host_bmc_ip: "10.0.0.1".to_string(),
             serial_number: "SN123456".to_string(),
+            host_machine_id: "host-aaa".to_string(),
+            dpu_machine_id: "dpu-bbb".to_string(),
         };
 
         sdk.register_dpu_device(info).await.unwrap();
@@ -1277,6 +1358,7 @@ mod tests {
             node_id: "host-001".to_string(),
             host_bmc_ip: "10.0.0.1".to_string(),
             dpu_device_names: vec!["dpu-001".to_string(), "dpu-002".to_string()],
+            host_machine_id: "host-aaa".to_string(),
         };
 
         sdk.register_dpu_node(info).await.unwrap();
@@ -1305,6 +1387,8 @@ mod tests {
             dpu_bmc_ip: "10.0.0.10".to_string(),
             host_bmc_ip: "10.0.0.1".to_string(),
             serial_number: "SN123456".to_string(),
+            host_machine_id: "host-aaa".to_string(),
+            dpu_machine_id: "dpu-bbb".to_string(),
         };
 
         sdk.register_dpu_device(info).await.unwrap();
@@ -1334,6 +1418,7 @@ mod tests {
             node_id: "host-001".to_string(),
             host_bmc_ip: "10.0.0.1".to_string(),
             dpu_device_names: vec!["dpu-001".to_string()],
+            host_machine_id: "host-aaa".to_string(),
         };
 
         sdk.register_dpu_node(info).await.unwrap();
@@ -1358,11 +1443,26 @@ mod tests {
             BTreeMap::from([
                 ("test/device".to_string(), "true".to_string()),
                 ("test/host-bmc-ip".to_string(), info.host_bmc_ip.clone()),
+                (
+                    "test/host-machine-id".to_string(),
+                    info.host_machine_id.clone(),
+                ),
+                (
+                    "test/dpu-machine-id".to_string(),
+                    info.dpu_machine_id.clone(),
+                ),
             ])
         }
 
         fn node_labels(&self) -> BTreeMap<String, String> {
             BTreeMap::from([("test/node".to_string(), "true".to_string())])
+        }
+
+        fn node_context_labels(&self, info: &DpuNodeInfo) -> BTreeMap<String, String> {
+            BTreeMap::from([(
+                "test/host-machine-id".to_string(),
+                info.host_machine_id.clone(),
+            )])
         }
     }
 
@@ -1380,6 +1480,8 @@ mod tests {
             dpu_bmc_ip: "10.0.0.10".to_string(),
             host_bmc_ip: "10.0.0.1".to_string(),
             serial_number: "SN123456".to_string(),
+            host_machine_id: "host-aaa".to_string(),
+            dpu_machine_id: "dpu-bbb".to_string(),
         };
 
         sdk.register_dpu_device(info).await.unwrap();
@@ -1394,6 +1496,14 @@ mod tests {
         assert_eq!(
             labels.get("test/host-bmc-ip"),
             Some(&"10.0.0.1".to_string())
+        );
+        assert_eq!(
+            labels.get("test/host-machine-id"),
+            Some(&"host-aaa".to_string())
+        );
+        assert_eq!(
+            labels.get("test/dpu-machine-id"),
+            Some(&"dpu-bbb".to_string())
         );
     }
 
@@ -1410,6 +1520,8 @@ mod tests {
             dpu_bmc_ip: "10.0.0.10".to_string(),
             host_bmc_ip: "10.0.0.1".to_string(),
             serial_number: "SN123456".to_string(),
+            host_machine_id: "host-aaa".to_string(),
+            dpu_machine_id: "dpu-bbb".to_string(),
         };
 
         sdk.register_dpu_device(info).await.unwrap();
@@ -1434,6 +1546,7 @@ mod tests {
             node_id: "host-001".to_string(),
             host_bmc_ip: "10.0.0.1".to_string(),
             dpu_device_names: vec!["dpu-001".to_string()],
+            host_machine_id: "host-aaa".to_string(),
         };
 
         sdk.register_dpu_node(info).await.unwrap();
@@ -1445,6 +1558,11 @@ mod tests {
         let labels = node.metadata.labels.as_ref().unwrap();
 
         assert_eq!(labels.get("test/node"), Some(&"true".to_string()));
+        assert_eq!(
+            labels.get("test/host-machine-id"),
+            Some(&"host-aaa".to_string()),
+            "contextual label from node_context_labels should be merged"
+        );
     }
 
     #[tokio::test]
@@ -1459,6 +1577,7 @@ mod tests {
             node_id: "host-001".to_string(),
             host_bmc_ip: "10.0.0.1".to_string(),
             dpu_device_names: vec!["dpu-001".to_string()],
+            host_machine_id: "host-aaa".to_string(),
         };
 
         sdk.register_dpu_node(info).await.unwrap();
@@ -1525,6 +1644,8 @@ mod tests {
             dpu_bmc_ip: "10.0.0.10".to_string(),
             host_bmc_ip: "10.0.0.1".to_string(),
             serial_number: "SN123".to_string(),
+            host_machine_id: "host-aaa".to_string(),
+            dpu_machine_id: "dpu-bbb".to_string(),
         };
         sdk.register_dpu_device(device_info).await.unwrap();
 
@@ -1601,6 +1722,8 @@ mod tests {
             dpu_bmc_ip: "10.0.0.10".to_string(),
             host_bmc_ip: "10.0.0.1".to_string(),
             serial_number: "SN111".to_string(),
+            host_machine_id: "host-111".to_string(),
+            dpu_machine_id: "dpu-111".to_string(),
         };
 
         let info2 = DpuDeviceInfo {
@@ -1608,6 +1731,8 @@ mod tests {
             dpu_bmc_ip: "10.0.0.20".to_string(),
             host_bmc_ip: "10.0.0.2".to_string(),
             serial_number: "SN222".to_string(),
+            host_machine_id: "host-222".to_string(),
+            dpu_machine_id: "dpu-222".to_string(),
         };
 
         sdk1.register_dpu_device(info1).await.unwrap();
@@ -1735,5 +1860,313 @@ mod tests {
 
         assert_eq!(config.bfb_url, "http://example.com/test.bfb");
         assert_eq!(config.deployment_name, "my-deployment");
+    }
+
+    fn terminating_timestamp() -> k8s_openapi::apimachinery::pkg::apis::meta::v1::Time {
+        k8s_openapi::apimachinery::pkg::apis::meta::v1::Time(
+            k8s_openapi::jiff::Timestamp::UNIX_EPOCH,
+        )
+    }
+
+    #[tokio::test]
+    async fn test_register_dpu_device_fails_when_terminating() {
+        let mock = SdkMock::new();
+        let sdk = DpfSdkBuilder::new(mock.clone(), TEST_NAMESPACE, String::new())
+            .build_without_resources()
+            .await
+            .unwrap();
+
+        let terminating_device = DPUDevice {
+            metadata: ObjectMeta {
+                name: Some("dpu-001".to_string()),
+                namespace: Some(TEST_NAMESPACE.to_string()),
+                deletion_timestamp: Some(terminating_timestamp()),
+                ..Default::default()
+            },
+            spec: DpuDeviceSpec {
+                bmc_ip: Some("10.0.0.10".to_string()),
+                bmc_port: Some(443),
+                number_of_p_fs: Some(1),
+                opn: None,
+                pf0_name: None,
+                psid: None,
+                serial_number: "SN123456".to_string(),
+            },
+            status: None,
+        };
+        mock.devices
+            .write()
+            .unwrap()
+            .insert(SdkMock::key(&terminating_device), terminating_device);
+
+        let info = DpuDeviceInfo {
+            device_name: "dpu-001".to_string(),
+            dpu_bmc_ip: "10.0.0.10".to_string(),
+            host_bmc_ip: "10.0.0.1".to_string(),
+            serial_number: "SN123456".to_string(),
+            host_machine_id: "host-aaa".to_string(),
+            dpu_machine_id: "dpu-bbb".to_string(),
+        };
+        let err = sdk.register_dpu_device(info).await.unwrap_err();
+        assert!(
+            matches!(err, DpfError::InvalidState(_)),
+            "expected InvalidState, got: {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_register_dpu_device_ok_when_existing_not_terminating() {
+        let mock = SdkMock::new();
+        let sdk = DpfSdkBuilder::new(mock.clone(), TEST_NAMESPACE, String::new())
+            .build_without_resources()
+            .await
+            .unwrap();
+
+        let existing_device = DPUDevice {
+            metadata: ObjectMeta {
+                name: Some("dpu-001".to_string()),
+                namespace: Some(TEST_NAMESPACE.to_string()),
+                ..Default::default()
+            },
+            spec: DpuDeviceSpec {
+                bmc_ip: Some("10.0.0.10".to_string()),
+                bmc_port: Some(443),
+                number_of_p_fs: Some(1),
+                opn: None,
+                pf0_name: None,
+                psid: None,
+                serial_number: "SN123456".to_string(),
+            },
+            status: None,
+        };
+        mock.devices
+            .write()
+            .unwrap()
+            .insert(SdkMock::key(&existing_device), existing_device);
+
+        let info = DpuDeviceInfo {
+            device_name: "dpu-001".to_string(),
+            dpu_bmc_ip: "10.0.0.10".to_string(),
+            host_bmc_ip: "10.0.0.1".to_string(),
+            serial_number: "SN123456".to_string(),
+            host_machine_id: "host-aaa".to_string(),
+            dpu_machine_id: "dpu-bbb".to_string(),
+        };
+        sdk.register_dpu_device(info).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_register_dpu_node_fails_when_terminating() {
+        let mock = SdkMock::new();
+        let sdk = DpfSdkBuilder::new(mock.clone(), TEST_NAMESPACE, String::new())
+            .build_without_resources()
+            .await
+            .unwrap();
+
+        let node_name = dpu_node_name("host-001");
+        let terminating_node = DPUNode {
+            metadata: ObjectMeta {
+                name: Some(node_name.clone()),
+                namespace: Some(TEST_NAMESPACE.to_string()),
+                deletion_timestamp: Some(terminating_timestamp()),
+                ..Default::default()
+            },
+            spec: DpuNodeSpec {
+                dpus: Some(vec![]),
+                node_dms_address: None,
+                node_reboot_method: None,
+            },
+            status: None,
+        };
+        mock.nodes
+            .write()
+            .unwrap()
+            .insert(SdkMock::key(&terminating_node), terminating_node);
+
+        let info = DpuNodeInfo {
+            node_id: "host-001".to_string(),
+            host_bmc_ip: "10.0.0.1".to_string(),
+            dpu_device_names: vec!["dpu-001".to_string()],
+            host_machine_id: "host-aaa".to_string(),
+        };
+        let err = sdk.register_dpu_node(info).await.unwrap_err();
+        assert!(
+            matches!(err, DpfError::InvalidState(_)),
+            "expected InvalidState, got: {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_register_dpu_node_ok_when_existing_not_terminating() {
+        let mock = SdkMock::new();
+        let sdk = DpfSdkBuilder::new(mock.clone(), TEST_NAMESPACE, String::new())
+            .build_without_resources()
+            .await
+            .unwrap();
+
+        let node_name = dpu_node_name("host-001");
+        let existing_node = DPUNode {
+            metadata: ObjectMeta {
+                name: Some(node_name.clone()),
+                namespace: Some(TEST_NAMESPACE.to_string()),
+                ..Default::default()
+            },
+            spec: DpuNodeSpec {
+                dpus: Some(vec![]),
+                node_dms_address: None,
+                node_reboot_method: None,
+            },
+            status: None,
+        };
+        mock.nodes
+            .write()
+            .unwrap()
+            .insert(SdkMock::key(&existing_node), existing_node);
+
+        let info = DpuNodeInfo {
+            node_id: "host-001".to_string(),
+            host_bmc_ip: "10.0.0.1".to_string(),
+            dpu_device_names: vec!["dpu-001".to_string()],
+            host_machine_id: "host-aaa".to_string(),
+        };
+        sdk.register_dpu_node(info).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_create_dpu_flavor_fails_when_terminating() {
+        let mock = SdkMock::new();
+        let flavor = crate::flavor::default_flavor(TEST_NAMESPACE);
+        let mut terminating_flavor = flavor.clone();
+        terminating_flavor.metadata.deletion_timestamp = Some(terminating_timestamp());
+        mock.flavors
+            .write()
+            .unwrap()
+            .insert(SdkMock::key(&terminating_flavor), terminating_flavor);
+
+        let err = create_dpu_flavor(&mock, TEST_NAMESPACE).await.unwrap_err();
+        assert!(
+            matches!(err, DpfError::InvalidState(_)),
+            "expected InvalidState, got: {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_create_dpu_flavor_ok_when_existing_not_terminating() {
+        let mock = SdkMock::new();
+        let flavor = crate::flavor::default_flavor(TEST_NAMESPACE);
+        mock.flavors
+            .write()
+            .unwrap()
+            .insert(SdkMock::key(&flavor), flavor);
+
+        create_dpu_flavor(&mock, TEST_NAMESPACE).await.unwrap();
+    }
+
+    #[derive(Clone, Default)]
+    struct BfbMock {
+        bfbs: Arc<RwLock<BTreeMap<String, BFB>>>,
+    }
+
+    #[async_trait]
+    impl crate::repository::BfbRepository for BfbMock {
+        async fn get(&self, name: &str, ns: &str) -> Result<Option<BFB>, DpfError> {
+            Ok(self
+                .bfbs
+                .read()
+                .unwrap()
+                .get(&format!("{ns}/{name}"))
+                .cloned())
+        }
+        async fn list(&self, ns: &str) -> Result<Vec<BFB>, DpfError> {
+            let prefix = format!("{ns}/");
+            Ok(self
+                .bfbs
+                .read()
+                .unwrap()
+                .iter()
+                .filter(|(k, _)| k.starts_with(&prefix))
+                .map(|(_, v)| v.clone())
+                .collect())
+        }
+        async fn create(&self, bfb: &BFB) -> Result<BFB, DpfError> {
+            let key = format!(
+                "{}/{}",
+                bfb.meta().namespace.as_deref().unwrap_or(""),
+                bfb.meta().name.as_deref().unwrap_or("")
+            );
+            let mut store = self.bfbs.write().unwrap();
+            if store.contains_key(&key) {
+                return Err(already_exists_error(
+                    bfb.meta().name.as_deref().unwrap_or(""),
+                ));
+            }
+            store.insert(key, bfb.clone());
+            Ok(bfb.clone())
+        }
+        async fn delete(&self, name: &str, ns: &str) -> Result<(), DpfError> {
+            self.bfbs.write().unwrap().remove(&format!("{ns}/{name}"));
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn test_create_bfb_deterministic_name() {
+        let url = "http://example.com/some.bfb";
+        let name1 = create_bfb(&BfbMock::default(), TEST_NAMESPACE, url)
+            .await
+            .unwrap();
+        let name2 = create_bfb(&BfbMock::default(), TEST_NAMESPACE, url)
+            .await
+            .unwrap();
+        assert_eq!(name1, name2, "same URL must produce the same BFB name");
+        assert!(name1.starts_with("bf-bundle-"));
+    }
+
+    #[tokio::test]
+    async fn test_create_bfb_name_valid_k8s() {
+        let url = "http://example.com/UPPER_case/special?chars=true&foo=bar#fragment";
+        let name = create_bfb(&BfbMock::default(), TEST_NAMESPACE, url)
+            .await
+            .unwrap();
+        assert!(name.len() <= 253, "name length {} exceeds 253", name.len());
+        assert!(
+            name.chars()
+                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '.'),
+            "name contains invalid characters: {name}"
+        );
+        assert!(
+            name.chars().next().unwrap().is_ascii_alphanumeric(),
+            "name must start with alphanumeric: {name}"
+        );
+        assert!(
+            name.chars().last().unwrap().is_ascii_alphanumeric(),
+            "name must end with alphanumeric: {name}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_create_bfb_different_urls_different_names() {
+        let mock = BfbMock::default();
+        let name_a = create_bfb(&mock, TEST_NAMESPACE, "http://a.example.com/a.bfb")
+            .await
+            .unwrap();
+        let name_b = create_bfb(&mock, TEST_NAMESPACE, "http://b.example.com/b.bfb")
+            .await
+            .unwrap();
+        assert_ne!(name_a, name_b);
+    }
+
+    #[tokio::test]
+    async fn test_create_bfb_reuses_existing() {
+        let mock = BfbMock::default();
+        let url = "http://example.com/reuse.bfb";
+        let name1 = create_bfb(&mock, TEST_NAMESPACE, url).await.unwrap();
+        let name2 = create_bfb(&mock, TEST_NAMESPACE, url).await.unwrap();
+        assert_eq!(name1, name2);
+        assert_eq!(
+            mock.bfbs.read().unwrap().len(),
+            1,
+            "only one BFB should exist"
+        );
     }
 }
