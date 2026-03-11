@@ -219,16 +219,23 @@ async fn handle_dpf_reboot(
     ctx: &mut StateHandlerContext<'_, MachineStateHandlerContextObjects>,
     dpf_sdk: &dyn DpfOperations,
 ) -> Result<StateHandlerOutcome<ManagedHostState>, StateHandlerError> {
-    // Custom BFB: wait for DPU agent discovery before allowing host reboot.
-    // This indicates cloud-init has completed.
-    // TODO: Remove when switching to a vanilla BFB with DPU agent as a DPU Service.
-    if dpu_snapshot.last_discovery_time.is_none() {
+    // Custom BFB: wait for all DPU agents to complete discovery before rebooting
+    // the host. This indicates cloud-init has completed on every DPU.
+    // Remove when switching to a vanilla BFB.
+    if let Some(pending) = state
+        .dpu_snapshots
+        .iter()
+        .find(|d| d.last_discovery_time.is_none())
+    {
         return update_phase_detail_or_wait(
             state,
             &dpu_snapshot.id,
             waiting_phase_detail,
             current_phase,
-            "Waiting for DPU scout discovery to complete before reboot",
+            &format!(
+                "Waiting for DPU {} scout discovery to complete before reboot",
+                pending.id
+            ),
         );
     }
 
