@@ -165,6 +165,13 @@ async fn test_duplicate_reboot_events_send_single_reboot(pool: sqlx::PgPool) {
     let rr = reboot_required.clone();
     mock.expect_is_reboot_required()
         .returning(move |_| Ok(rr.load(Ordering::SeqCst)));
+    let rr2 = reboot_required.clone();
+    mock.expect_reboot_complete()
+        .times(1..)
+        .returning(move |_| {
+            rr2.store(false, Ordering::SeqCst);
+            Ok(())
+        });
 
     let dpf_sdk: Arc<dyn crate::dpf::DpfOperations> = Arc::new(mock);
     let mut config = get_config();

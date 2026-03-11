@@ -140,6 +140,19 @@ async fn get_host_state(
     machine.state.value
 }
 
+async fn dpu_device_names(pool: &sqlx::PgPool, mh: &TestManagedHost) -> HashSet<String> {
+    let mut txn = pool.begin().await.unwrap();
+    let mut names = HashSet::new();
+    for dpu_id in &mh.dpu_ids {
+        let dpu = db::machine::find_one(txn.as_mut(), dpu_id, Default::default())
+            .await
+            .unwrap()
+            .unwrap();
+        names.insert(crate::dpf::device_name(&dpu).unwrap());
+    }
+    names
+}
+
 /// Reprovisioning handler: `DpfState::Reprovisioning` transitions the DPU
 /// to `DpfState::WaitingForReady` under `DPUReprovision`.
 #[crate::sqlx_test]
@@ -401,7 +414,7 @@ async fn test_multi_dpu_provisioning_registers_all_devices(pool: sqlx::PgPool) {
         .clone()
         .into_iter()
         .collect();
-    let expected: HashSet<String> = mh.dpu_ids.iter().map(|id| id.to_string()).collect();
+    let expected = dpu_device_names(&pool, &mh).await;
     assert_eq!(
         registered, expected,
         "register_dpu_device must be called for every DPU.\n\
@@ -440,7 +453,7 @@ async fn test_multi_dpu_reprovisioning_calls_all_dpus(pool: sqlx::PgPool) {
     device_ready.store(false, Ordering::SeqCst);
     set_reprovision_dpf_state(&pool, &mh.id, &mh.dpu_ids, DpfState::Reprovisioning).await;
 
-    let expected: HashSet<String> = mh.dpu_ids.iter().map(|id| id.to_string()).collect();
+    let expected = dpu_device_names(&pool, &mh).await;
     for _ in 0..10 {
         timeout(TEST_TIMEOUT, env.run_machine_state_controller_iteration())
             .await
@@ -648,7 +661,7 @@ async fn test_multi_dpu_reprovisioning_per_dpu(pool: sqlx::PgPool) {
         .clone()
         .into_iter()
         .collect();
-    let expected: HashSet<String> = mh.dpu_ids.iter().map(|id| id.to_string()).collect();
+    let expected = dpu_device_names(&pool, &mh).await;
     assert_eq!(
         reprovisioned, expected,
         "Both DPUs must be reprovisioned after multiple iterations.\n\

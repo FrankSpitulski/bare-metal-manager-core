@@ -219,6 +219,19 @@ async fn handle_dpf_reboot(
     ctx: &mut StateHandlerContext<'_, MachineStateHandlerContextObjects>,
     dpf_sdk: &dyn DpfOperations,
 ) -> Result<StateHandlerOutcome<ManagedHostState>, StateHandlerError> {
+    // Custom BFB: wait for DPU agent discovery before allowing host reboot.
+    // This indicates cloud-init has completed.
+    // TODO: Remove when switching to a vanilla BFB with DPU agent as a DPU Service.
+    if dpu_snapshot.last_discovery_time.is_none() {
+        return update_phase_detail_or_wait(
+            state,
+            &dpu_snapshot.id,
+            waiting_phase_detail,
+            current_phase,
+            "Waiting for DPU scout discovery to complete before reboot",
+        );
+    }
+
     let reboot_already_requested = state
         .host_snapshot
         .last_reboot_requested
@@ -298,6 +311,7 @@ async fn handle_dpf_waiting_for_ready(
             retry_count: 0,
         }));
     }
+    // wait for dpf to report that the dpu is ready
     if current_phase != carbide_dpf::DpuPhase::Ready {
         return update_phase_detail_or_wait(
             state,
@@ -305,6 +319,16 @@ async fn handle_dpf_waiting_for_ready(
             waiting_phase_detail,
             &current_phase,
             "Waiting for DPU to reach Ready phase",
+        );
+    }
+    // also wait for dpu scout discovery to complete
+    if dpu_snapshot.last_discovery_time.is_none() {
+        return update_phase_detail_or_wait(
+            state,
+            &dpu_snapshot.id,
+            waiting_phase_detail,
+            &current_phase,
+            "Waiting for DPU scout discovery to complete",
         );
     }
 
