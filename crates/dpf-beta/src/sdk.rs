@@ -914,6 +914,8 @@ impl<R: DpuRepository, L> DpfSdk<R, L> {
 
 impl<R: DpuNodeMaintenanceRepository, L> DpfSdk<R, L> {
     /// Release the hold on a DPU node maintenance.
+    /// If the DpuNodeMaintenance CR doesn't exist, this is a no-op
+    /// (the hold is effectively already released).
     pub async fn release_maintenance_hold(&self, node_name: &str) -> Result<(), DpfError> {
         let maintenance_name = format!("{}-hold", node_name);
         let patch = json!({
@@ -923,8 +925,24 @@ impl<R: DpuNodeMaintenanceRepository, L> DpfSdk<R, L> {
                 }
             }
         });
-        DpuNodeMaintenanceRepository::patch(&*self.repo, &maintenance_name, &self.namespace, patch)
-            .await
+        match DpuNodeMaintenanceRepository::patch(
+            &*self.repo,
+            &maintenance_name,
+            &self.namespace,
+            patch,
+        )
+        .await
+        {
+            Ok(()) => Ok(()),
+            Err(DpfError::KubeError(kube::Error::Api(ref err))) if err.code == 404 => {
+                tracing::debug!(
+                    maintenance = %maintenance_name,
+                    "DpuNodeMaintenance not found, hold already released"
+                );
+                Ok(())
+            }
+            Err(e) => Err(e),
+        }
     }
 }
 

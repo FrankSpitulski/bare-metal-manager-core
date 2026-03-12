@@ -47,10 +47,16 @@ impl DpuNodeMaintenanceRepository for MaintenanceHoldMock {
         Ok(self.maintenances.read().unwrap().get(name).cloned())
     }
     async fn patch(&self, name: &str, _: &str, patch: serde_json::Value) -> Result<(), DpfError> {
-        if let Some(m) = self.maintenances.write().unwrap().get_mut(name)
-            && let Some(annos) = patch
-                .pointer("/metadata/annotations")
-                .and_then(|v| v.as_object())
+        let mut store = self.maintenances.write().unwrap();
+        let m = store.get_mut(name).ok_or_else(|| {
+            DpfError::KubeError(kube::Error::Api(Box::new(
+                kube::core::Status::failure(&format!("{name} not found"), "NotFound")
+                    .with_code(404),
+            )))
+        })?;
+        if let Some(annos) = patch
+            .pointer("/metadata/annotations")
+            .and_then(|v| v.as_object())
         {
             let m_annos = m.metadata.annotations.get_or_insert_with(BTreeMap::new);
             for (k, v) in annos {
@@ -149,5 +155,21 @@ async fn test_release_maintenance_hold_sets_annotation_false() {
             .unwrap()
             .get(HOLD_ANNOTATION),
         Some(&"false".to_string())
+    );
+}
+
+#[tokio::test]
+async fn test_release_maintenance_hold_noop_when_cr_missing() {
+    let mock = MaintenanceHoldMock::default();
+    let sdk = DpfSdkBuilder::new(mock.clone(), TEST_NS, String::new())
+        .build_without_resources()
+        .await
+        .unwrap();
+
+    // No DPUNodeMaintenance CR exists — release_maintenance_hold should succeed as a no-op
+    let result = sdk.release_maintenance_hold("dpu-node-nonexistent").await;
+    assert!(
+        result.is_ok(),
+        "expected Ok for missing CR, got: {result:?}"
     );
 }
