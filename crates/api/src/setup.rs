@@ -360,7 +360,8 @@ pub async fn start_api(
 
     let shared_nmxm_pool: Arc<dyn NmxmClientPool> = Arc::new(nmxm_pool);
 
-    // Create DPF SDK and initialize CRDs if enabled
+    // Create DPF SDK and initialize CRs if enabled
+    // If we end up having static DPUDeployments, we could move the static CRs outside of the API.
     let dpf_sdk: Option<Arc<dyn crate::dpf::DpfOperations>> = if carbide_config.dpf.enabled {
         tracing::info!("Initializing DPF SDK");
         let repo = carbide_dpf::KubeRepository::new()
