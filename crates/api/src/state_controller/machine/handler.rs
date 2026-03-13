@@ -3362,23 +3362,29 @@ impl DpuMachineStateHandler {
                     ));
                 }
 
-                // Checking dpf and updating state to start dpf based provisioning in this state because this state works as a sync state as well.
-                let next_state =
-                    if dpf_based_dpu_provisioning_possible(state, self.dpf_sdk.is_some(), false) {
-                        DpuInitState::DpfStates {
-                            state: model::machine::DpfState::Provisioning,
-                        }
-                    } else {
-                        // Next just do a ForceRestart to netboot without secureboot.
-                        // This will kick off the ARM OS install since we move to DPU/Init next.
-                        for dpu_snapshot in &state.dpu_snapshots {
-                            handler_restart_dpu(dpu_snapshot, ctx).await?;
-                        }
-                        DpuInitState::Init
-                    };
+                if dpf_based_dpu_provisioning_possible(state, self.dpf_sdk.is_some(), false) {
+                    let mut txn = ctx.services.db_pool.begin().await?;
+                    db::machine::mark_machine_ingestion_done_with_dpf(
+                        &mut txn,
+                        &state.host_snapshot.id,
+                    )
+                    .await?;
 
-                let next_state =
-                    next_state.next_state_with_all_dpus_updated(&state.managed_state)?;
+                    let next_state = DpuInitState::DpfStates {
+                        state: model::machine::DpfState::Provisioning,
+                    }
+                    .next_state_with_all_dpus_updated(&state.managed_state)?;
+
+                    return Ok(
+                        StateHandlerOutcome::transition(next_state).with_txn(txn)
+                    );
+                }
+
+                for dpu_snapshot in &state.dpu_snapshots {
+                    handler_restart_dpu(dpu_snapshot, ctx).await?;
+                }
+                let next_state = DpuInitState::Init
+                    .next_state_with_all_dpus_updated(&state.managed_state)?;
                 Ok(StateHandlerOutcome::transition(next_state))
             }
         }
