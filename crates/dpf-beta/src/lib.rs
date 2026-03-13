@@ -67,8 +67,8 @@ mod test;
 pub use error::DpfError;
 pub use repository::{DpfRepository, KubeRepository};
 pub use sdk::{
-    DpfSdk, DpfSdkBuilder, NoLabels, ResourceLabeler, dpu_cr_name, dpu_node_cr_name,
-    node_id_from_dpu_node_cr_name,
+    DpfSdk, DpfSdkBuilder, NoLabels, ResourceLabeler, dpu_cr_name, dpu_device_cr_name,
+    dpu_node_cr_name, node_id_from_dpu_node_cr_name,
 };
 pub use services::ServiceRegistryConfig;
 pub use types::{

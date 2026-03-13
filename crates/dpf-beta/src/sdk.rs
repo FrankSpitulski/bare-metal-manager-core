@@ -292,11 +292,23 @@ pub fn dpu_node_cr_name(node_id: &str) -> String {
     format!("node-{}", node_id)
 }
 
+/// DPUDevice CR name: `device-{device_id}`.
+/// The DPF operator uses the DPUDevice CR name verbatim when constructing
+/// the DPU CR name (`{dpuNodeName}-{dpuDeviceName}`), so the `device-`
+/// prefix produces the expected `node-{node_id}-device-{device_id}` format.
+pub fn dpu_device_cr_name(device_id: &str) -> String {
+    format!("device-{}", device_id)
+}
+
 /// DPU CR name: `node-{node_id}-device-{device_id}`.
-/// Both identifiers must be compact enough to keep the combined name within
-/// the 48-char K8s resource name limit.
+/// This matches the DPF operator's naming: `{dpuNodeName}-{dpuDeviceName}`
+/// where dpuNodeName = `node-{node_id}` and dpuDeviceName = `device-{device_id}`.
 pub fn dpu_cr_name(device_id: &str, node_id: &str) -> String {
-    format!("{}-device-{}", dpu_node_cr_name(node_id), device_id)
+    format!(
+        "{}-{}",
+        dpu_node_cr_name(node_id),
+        dpu_device_cr_name(device_id)
+    )
 }
 
 /// Extract the node ID from a DPUNode CR name by stripping the `node-` prefix.
@@ -702,11 +714,11 @@ impl<R: DpuDeviceRepository, L: ResourceLabeler> DpfSdk<R, L> {
     /// This operation is idempotent - if the device already exists, it will be
     /// skipped. This handles state machine retries gracefully.
     pub async fn register_dpu_device(&self, info: DpuDeviceInfo) -> Result<(), DpfError> {
-        let device_name = info.device_id.clone();
+        let cr_name = dpu_device_cr_name(&info.device_id);
 
         let device = DPUDevice {
             metadata: ObjectMeta {
-                name: Some(info.device_id.clone()),
+                name: Some(cr_name.clone()),
                 namespace: Some(self.namespace.clone()),
                 labels: {
                     let labels = self.labeler.device_labels(&info);
@@ -732,33 +744,35 @@ impl<R: DpuDeviceRepository, L: ResourceLabeler> DpfSdk<R, L> {
 
         match DpuDeviceRepository::create(&*self.repo, &device).await {
             Ok(_) => {
-                tracing::info!(device_name = %device_name, "Created DPU device");
+                tracing::info!(device_name = %cr_name, "Created DPU device");
                 Ok(())
             }
             Err(DpfError::KubeError(kube::Error::Api(ref err)))
                 if err.is_already_exists() || err.is_conflict() =>
             {
                 let existing =
-                    DpuDeviceRepository::get(&*self.repo, &device_name, &self.namespace).await?;
+                    DpuDeviceRepository::get(&*self.repo, &cr_name, &self.namespace).await?;
                 if existing
                     .as_ref()
                     .is_some_and(|d| d.metadata.deletion_timestamp.is_some())
                 {
                     return Err(DpfError::InvalidState(format!(
-                        "DPUDevice {device_name} is being deleted (has deletionTimestamp); \
+                        "DPUDevice {cr_name} is being deleted (has deletionTimestamp); \
                          cannot re-register until the old resource is fully removed"
                     )));
                 }
-                tracing::debug!(device_name = %device_name, "DPU device already exists (concurrent create)");
+                tracing::debug!(device_name = %cr_name, "DPU device already exists (concurrent create)");
                 Ok(())
             }
             Err(e) => Err(e),
         }
     }
 
-    /// Delete a DPU device.
+    /// Delete a DPU device. `dpu_device_name` is the raw device ID (without
+    /// the `device-` CR prefix); the SDK applies the prefix internally.
     pub async fn delete_dpu_device(&self, dpu_device_name: &str) -> Result<(), DpfError> {
-        DpuDeviceRepository::delete(&*self.repo, dpu_device_name, &self.namespace).await
+        let cr_name = dpu_device_cr_name(dpu_device_name);
+        DpuDeviceRepository::delete(&*self.repo, &cr_name, &self.namespace).await
     }
 }
 
@@ -790,7 +804,9 @@ impl<R: DpuNodeRepository, L: ResourceLabeler> DpfSdk<R, L> {
                 dpus: Some(
                     info.device_ids
                         .into_iter()
-                        .map(|id| DpuNodeDpus { name: id })
+                        .map(|id| DpuNodeDpus {
+                            name: dpu_device_cr_name(&id),
+                        })
                         .collect(),
                 ),
                 node_dms_address: None,
@@ -950,6 +966,8 @@ impl<R: DpuRepository + DpuNodeRepository + DpuDeviceRepository, L: ResourceLabe
     /// In the DPUDeployment (M4) model we remove the DPUNode and DPUDevices so DPF has no record
     /// of the DPU; no status patch to Error. Best-effort: remove controlled label, delete node,
     /// delete all DPU devices.
+    ///
+    /// `dpu_device_names` contains raw device IDs (without the `device-` CR prefix).
     pub async fn force_delete_host(
         &self,
         node_name: &str,
@@ -972,6 +990,7 @@ impl<R: DpuRepository + DpuNodeRepository + DpuDeviceRepository, L: ResourceLabe
                 tracing::warn!("Failed to delete DPU node {}: {}", node_name, e);
             }
 
+            // dpus[].name already has the device- prefix (set by register_dpu_node)
             for dpu in &dpus {
                 if let Err(e) =
                     DpuDeviceRepository::delete(&*self.repo, &dpu.name, &self.namespace).await
@@ -987,8 +1006,11 @@ impl<R: DpuRepository + DpuNodeRepository + DpuDeviceRepository, L: ResourceLabe
         }
 
         for name in dpu_device_names {
-            if let Err(e) = DpuDeviceRepository::delete(&*self.repo, name, &self.namespace).await {
-                tracing::warn!("Failed to delete DPU device {}: {}", name, e);
+            let cr_name = dpu_device_cr_name(name);
+            if let Err(e) =
+                DpuDeviceRepository::delete(&*self.repo, &cr_name, &self.namespace).await
+            {
+                tracing::warn!("Failed to delete DPU device {}: {}", cr_name, e);
             }
         }
 
@@ -998,6 +1020,7 @@ impl<R: DpuRepository + DpuNodeRepository + DpuDeviceRepository, L: ResourceLabe
     /// Force delete a single DPU and its device.
     ///
     /// In M4 we delete the DPU CR and DPUDevice; no status patch to Error.
+    /// `dpu_device_name` is the raw device ID (without the `device-` CR prefix).
     pub async fn force_delete_dpu(
         &self,
         dpu_device_name: &str,
@@ -1008,10 +1031,11 @@ impl<R: DpuRepository + DpuNodeRepository + DpuDeviceRepository, L: ResourceLabe
         if let Err(e) = DpuRepository::delete(&*self.repo, &cr_name, &self.namespace).await {
             tracing::warn!("Failed to delete DPU {}: {}", cr_name, e);
         }
+        let device_cr_name = dpu_device_cr_name(dpu_device_name);
         if let Err(e) =
-            DpuDeviceRepository::delete(&*self.repo, dpu_device_name, &self.namespace).await
+            DpuDeviceRepository::delete(&*self.repo, &device_cr_name, &self.namespace).await
         {
-            tracing::warn!("Failed to delete DPU device {}: {}", dpu_device_name, e);
+            tracing::warn!("Failed to delete DPU device {}: {}", device_cr_name, e);
         }
         Ok(())
     }
@@ -1891,7 +1915,7 @@ mod tests {
 
         let terminating_device = DPUDevice {
             metadata: ObjectMeta {
-                name: Some("dpu-001".to_string()),
+                name: Some(dpu_device_cr_name("dpu-001")),
                 namespace: Some(TEST_NAMESPACE.to_string()),
                 deletion_timestamp: Some(terminating_timestamp()),
                 ..Default::default()
@@ -1937,7 +1961,7 @@ mod tests {
 
         let existing_device = DPUDevice {
             metadata: ObjectMeta {
-                name: Some("dpu-001".to_string()),
+                name: Some(dpu_device_cr_name("dpu-001")),
                 namespace: Some(TEST_NAMESPACE.to_string()),
                 ..Default::default()
             },
