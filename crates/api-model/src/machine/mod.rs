@@ -806,6 +806,16 @@ impl Machine {
         self.state.version
     }
 
+    /// K8s-safe identifier derived from the BMC MAC address, used as both the
+    /// DPF node and device component in CR names.
+    /// e.g. `9C:63:C0:E6:B4:3D` -> `9c-63-c0-e6-b4-3d`.
+    /// Not using Machine ID because it's too long, and not using IP because it's not stable.
+    pub fn dpf_id(&self) -> Option<String> {
+        self.bmc_info
+            .mac
+            .map(|mac| mac.to_string().to_lowercase().replace(':', "-"))
+    }
+
     pub fn loopback_ip(&self) -> Option<IpAddr> {
         self.network_config.loopback_ip
     }

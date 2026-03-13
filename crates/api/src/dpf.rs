@@ -18,7 +18,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use carbide_dpf::{
     BmcPasswordProvider, DpfError, DpfSdk, DpuDeviceInfo, DpuNodeInfo, DpuPhase, DpuWatcher,
-    KubeRepository, ResourceLabeler, node_id_from_node_name,
+    KubeRepository, ResourceLabeler, node_id_from_dpu_node_cr_name,
 };
 use sqlx::PgPool;
 
@@ -54,50 +54,21 @@ const BFB_PATH: &str = "/public/blobs/internal/aarch64/forge.bfb";
 /// the `carbide-pxe-external` Service. The DPU fetches the BFB over the
 /// out-of-band management network, so it needs the external IP — not an
 /// in-cluster DNS name.
-pub async fn resolve_bfb_url() -> eyre::Result<String> {
-    let client = kube::Client::try_default()
-        .await
-        .map_err(|e| eyre::eyre!("Failed to create kube client for PXE lookup: {e}"))?;
+pub async fn resolve_bfb_url() -> Result<String, DpfError> {
+    let client = kube::Client::try_default().await?;
     let services =
         kube::Api::<k8s_openapi::api::core::v1::Service>::namespaced(client, "forge-system");
-    let pxe_service = services
-        .get("carbide-pxe-external")
-        .await
-        .map_err(|e| eyre::eyre!("Failed to get carbide-pxe-external service: {e}"))?;
+    let pxe_service = services.get("carbide-pxe-external").await?;
     let pxe_ip = pxe_service
         .status
         .and_then(|s| s.load_balancer)
         .and_then(|lb| lb.ingress)
         .and_then(|ingress| ingress.first().cloned())
         .and_then(|entry| entry.ip)
-        .ok_or_else(|| eyre::eyre!("carbide-pxe-external has no LoadBalancer IP"))?;
+        .ok_or_else(|| {
+            DpfError::ConfigError("carbide-pxe-external service has no LoadBalancer IP".to_string())
+        })?;
     Ok(format!("http://{pxe_ip}{BFB_PATH}"))
-}
-
-/// Convert a MAC address into a lowercase, hyphen-separated identifier
-/// suitable for use in K8s resource names (RFC 1123 subdomain).
-/// e.g. `9C:63:C0:E6:B4:3D` → `9c-63-c0-e6-b4-3d`.
-fn mac_to_k8s_name(mac: mac_address::MacAddress) -> String {
-    mac.to_string().to_lowercase().replace(':', "-")
-}
-
-fn bmc_mac_k8s_name(machine: &model::machine::Machine) -> eyre::Result<String> {
-    let mac = machine
-        .bmc_info
-        .mac
-        .ok_or_else(|| eyre::eyre!("BMC MAC is not set for machine {}", machine.id))?;
-    Ok(mac_to_k8s_name(mac))
-}
-
-/// Derive the DPUNode `node_id` from a host machine's BMC MAC address.
-/// Fed into `dpu_node_name()` to produce the full DPUNode resource name.
-pub fn node_id(host: &model::machine::Machine) -> eyre::Result<String> {
-    bmc_mac_k8s_name(host)
-}
-
-/// Derive the DPUDevice name from a DPU machine's BMC MAC address.
-pub fn device_name(dpu: &model::machine::Machine) -> eyre::Result<String> {
-    bmc_mac_k8s_name(dpu)
 }
 
 /// Trait for DPF SDK operations used by Carbide.
@@ -338,18 +309,21 @@ impl DpfSdkOps {
     }
 }
 
-/// Look up a host by DPUNode name and enqueue it for state handling.
-/// Node name format: `dpu-node-{bmc_mac_id}`, where `bmc_mac_id` is the host's
-/// BMC MAC address with colons replaced by hyphens.
+/// Look up a host by DPUNode CR name and enqueue it for state handling.
+/// CR name format: `node-{dpf_id}`, where `dpf_id` is the host's BMC MAC
+/// address with colons replaced by hyphens.
 async fn enqueue_host(db_pool: &PgPool, node_name: &str, reason: &str) -> Result<(), DpfError> {
-    let bmc_mac_id = node_id_from_node_name(node_name);
-    let bmc_mac = bmc_mac_id.replace('-', ":");
+    let bmc_mac_id = node_id_from_dpu_node_cr_name(node_name);
+    let bmc_mac: mac_address::MacAddress = bmc_mac_id
+        .replace('-', ":")
+        .parse()
+        .map_err(|e| DpfError::InvalidState(format!("Invalid BMC MAC in node name: {e}")))?;
 
     let host_machine_id = {
         let mut conn = db_pool.acquire().await.map_err(|e| {
             DpfError::InvalidState(format!("Failed to acquire database connection: {e}"))
         })?;
-        db::machine_topology::find_machine_id_by_bmc_mac(&mut conn, &bmc_mac)
+        db::machine_topology::find_machine_id_by_bmc_mac(&mut conn, bmc_mac)
             .await
             .map_err(|e| {
                 DpfError::InvalidState(format!("DB error looking up host by BMC MAC: {e}"))
@@ -357,7 +331,7 @@ async fn enqueue_host(db_pool: &PgPool, node_name: &str, reason: &str) -> Result
     };
 
     let Some(host_machine_id) = host_machine_id else {
-        tracing::warn!(node = %node_name, bmc_mac, reason, "Could not find host for DPF node");
+        tracing::warn!(node = %node_name, %bmc_mac, reason, "Could not find host for DPF node");
         return Ok(());
     };
 

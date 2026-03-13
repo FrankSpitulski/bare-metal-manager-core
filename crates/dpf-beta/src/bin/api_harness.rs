@@ -22,7 +22,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use carbide_dpf::repository::{DpuRepository, K8sConfigRepository};
 use carbide_dpf::{
     DpfError, DpfSdk, DpfSdkBuilder, DpuDeviceInfo, DpuNodeInfo, InitDpfResourcesConfig,
-    KubeRepository, NAMESPACE, ServiceDefinition, dpu_node_name,
+    KubeRepository, NAMESPACE, ServiceDefinition, dpu_node_cr_name,
 };
 use clap::{Parser, Subcommand};
 use libredfish::model::BootProgressTypes;
@@ -125,7 +125,7 @@ enum Commands {
     GetPhase {
         #[arg(long)]
         device_name: String,
-        /// DPU node name (e.g. dpu-node-{node_id})
+        /// DPU node name (e.g. node-{node_id})
         #[arg(long)]
         node_name: String,
     },
@@ -134,7 +134,7 @@ enum Commands {
     DeleteDpu {
         #[arg(long)]
         device_name: String,
-        /// DPU node name (e.g. dpu-node-{node_id})
+        /// DPU node name (e.g. node-{node_id})
         #[arg(long)]
         node_name: String,
     },
@@ -143,14 +143,14 @@ enum Commands {
     ForceDeleteDpu {
         #[arg(long)]
         device_name: String,
-        /// DPU node name (e.g. dpu-node-{node_id})
+        /// DPU node name (e.g. node-{node_id})
         #[arg(long)]
         node_name: String,
     },
 
     /// Force delete a DPU node and all its DPU devices
     ForceDeleteNode {
-        /// DPU node name (e.g. dpu-node-{node_id})
+        /// DPU node name (e.g. node-{node_id})
         #[arg(long)]
         node_name: String,
     },
@@ -163,28 +163,28 @@ enum Commands {
 
     /// Delete a DPU node and associated resources
     DeleteNode {
-        /// DPU node name (e.g. dpu-node-{node_id})
+        /// DPU node name (e.g. node-{node_id})
         #[arg(long)]
         node_name: String,
     },
 
     /// Check if a DPU node is waiting for external reboot
     IsRebootRequired {
-        /// DPU node name (e.g. dpu-node-{node_id})
+        /// DPU node name (e.g. node-{node_id})
         #[arg(long)]
         node_name: String,
     },
 
     /// Clear the external reboot required annotation on a DPU node
     ClearReboot {
-        /// DPU node name (e.g. dpu-node-{node_id})
+        /// DPU node name (e.g. node-{node_id})
         #[arg(long)]
         node_name: String,
     },
 
     /// Release the maintenance hold on a DPU node
     ReleaseHold {
-        /// DPU node name (e.g. dpu-node-{node_id})
+        /// DPU node name (e.g. node-{node_id})
         #[arg(long)]
         node_name: String,
     },
@@ -426,7 +426,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             device_name,
             timeout,
         } => {
-            let node_name = dpu_node_name(&device_name);
+            let node_name = dpu_node_cr_name(&device_name);
             run_reprovisioning_flow(
                 sdk,
                 &cli.namespace,
@@ -713,7 +713,7 @@ async fn run_provisioning_flow(
     tracing::info!("[2/4] Registering DPU devices...");
     for dpu in &dpus {
         let info = DpuDeviceInfo {
-            device_name: dpu.device_name.clone(),
+            device_id: dpu.device_name.clone(),
             dpu_bmc_ip: dpu.dpu_bmc_ip.clone(),
             host_bmc_ip: host_bmc_ip.to_string(),
             serial_number: dpu.serial_number.clone(),
@@ -728,13 +728,13 @@ async fn run_provisioning_flow(
     let node_info = DpuNodeInfo {
         node_id: node_id.to_string(),
         host_bmc_ip: host_bmc_ip.to_string(),
-        dpu_device_names: dpus.iter().map(|d| d.device_name.clone()).collect(),
+        device_ids: dpus.iter().map(|d| d.device_name.clone()).collect(),
         host_machine_id: String::new(),
     };
     sdk.register_dpu_node(node_info).await?;
     tracing::info!(dpu_count = dpus.len(), "Node registered");
 
-    let _node_name = dpu_node_name(node_id);
+    let _node_name = dpu_node_cr_name(node_id);
     tracing::info!(
         "[4/4] Monitoring DPU provisioning (maintenance -> release hold; reboot -> reboot + clear annotation)..."
     );
@@ -894,7 +894,7 @@ async fn run_cleanup(
 
     let node_name = device_names
         .first()
-        .map(|id| dpu_node_name(id))
+        .map(|id| dpu_node_cr_name(id))
         .ok_or("dpu_device_names must not be empty")?;
 
     tracing::info!("=== DPF Cleanup ===");

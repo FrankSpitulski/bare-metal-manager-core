@@ -17,7 +17,7 @@
 //! 2. Wait for watcher callbacks (DPU ready, reboot required)
 //! 3. Handle cleanup on error/reprovisioning
 
-use carbide_dpf::{DpuPhase, dpu_node_name};
+use carbide_dpf::{DpuPhase, dpu_node_cr_name};
 use carbide_uuid::machine::MachineId;
 use libredfish::SystemPowerControl;
 use model::machine::{
@@ -33,18 +33,18 @@ use crate::state_controller::state_handler::{
     StateHandlerContext, StateHandlerError, StateHandlerOutcome,
 };
 
+// wrapper so we can get an error without copying it at every call site
 fn bmc_ip(machine: &Machine) -> Result<&str, StateHandlerError> {
     machine.bmc_info.ip.as_deref().ok_or_else(|| {
         StateHandlerError::GenericError(eyre::eyre!("BMC IP is not set for machine {}", machine.id))
     })
 }
 
-fn node_id(host: &Machine) -> Result<String, StateHandlerError> {
-    crate::dpf::node_id(host).map_err(StateHandlerError::GenericError)
-}
-
-fn device_name(dpu: &Machine) -> Result<String, StateHandlerError> {
-    crate::dpf::device_name(dpu).map_err(StateHandlerError::GenericError)
+// wrapper so we can get an error without copying it at every call site
+fn dpf_id(machine: &Machine) -> Result<String, StateHandlerError> {
+    machine.dpf_id().ok_or_else(|| {
+        StateHandlerError::InvalidState(format!("BMC MAC is not set for machine {}", machine.id))
+    })
 }
 
 /// Transition all DPU sub-states to the given DPF state, preserving the
@@ -180,7 +180,7 @@ async fn handle_dpf_provisioning(
             .map(|x| x.product_serial.as_str())
             .unwrap_or_default();
         let device_info = carbide_dpf::DpuDeviceInfo {
-            device_name: device_name(dpu)?,
+            device_id: dpf_id(dpu)?,
             dpu_bmc_ip: bmc_ip(dpu)?.to_string(),
             host_bmc_ip: bmc_ip(&state.host_snapshot)?.to_string(),
             serial_number: serial_number.to_string(),
@@ -190,15 +190,15 @@ async fn handle_dpf_provisioning(
         dpf_sdk.register_dpu_device(device_info).await?;
     }
 
-    let dpu_device_names: Vec<String> = state
+    let device_ids: Vec<String> = state
         .dpu_snapshots
         .iter()
-        .map(|d| device_name(d))
+        .map(|d| dpf_id(d))
         .collect::<Result<_, _>>()?;
     let node_info = carbide_dpf::DpuNodeInfo {
-        node_id: node_id(&state.host_snapshot)?,
+        node_id: dpf_id(&state.host_snapshot)?,
         host_bmc_ip: bmc_ip(&state.host_snapshot)?.to_string(),
-        dpu_device_names,
+        device_ids,
         host_machine_id: state.host_snapshot.id.to_string(),
     };
     dpf_sdk.register_dpu_node(node_info).await?;
@@ -278,8 +278,8 @@ async fn handle_dpf_waiting_for_ready(
     ctx: &mut StateHandlerContext<'_, MachineStateHandlerContextObjects>,
     dpf_sdk: &dyn DpfOperations,
 ) -> Result<StateHandlerOutcome<ManagedHostState>, StateHandlerError> {
-    let node_name = dpu_node_name(&node_id(&state.host_snapshot)?);
-    let dpu_device_name = device_name(dpu_snapshot)?;
+    let node_name = dpu_node_cr_name(&dpf_id(&state.host_snapshot)?);
+    let dpu_device_name = dpf_id(dpu_snapshot)?;
     let current_phase = dpf_sdk.get_dpu_phase(&dpu_device_name, &node_name).await?;
 
     dpf_sdk.release_maintenance_hold(&node_name).await?;
@@ -365,9 +365,9 @@ async fn handle_dpf_reprovisioning(
     dpu_snapshot: &Machine,
     dpf_sdk: &dyn DpfOperations,
 ) -> Result<StateHandlerOutcome<ManagedHostState>, StateHandlerError> {
-    let node_name = dpu_node_name(&node_id(&state.host_snapshot)?);
+    let node_name = dpu_node_cr_name(&dpf_id(&state.host_snapshot)?);
     dpf_sdk
-        .reprovision_dpu(&device_name(dpu_snapshot)?, &node_name)
+        .reprovision_dpu(&dpf_id(dpu_snapshot)?, &node_name)
         .await?;
     let next = set_one_dpu_dpf_state(
         state,

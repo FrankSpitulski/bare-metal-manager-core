@@ -3375,16 +3375,14 @@ impl DpuMachineStateHandler {
                     }
                     .next_state_with_all_dpus_updated(&state.managed_state)?;
 
-                    return Ok(
-                        StateHandlerOutcome::transition(next_state).with_txn(txn)
-                    );
+                    return Ok(StateHandlerOutcome::transition(next_state).with_txn(txn));
                 }
 
                 for dpu_snapshot in &state.dpu_snapshots {
                     handler_restart_dpu(dpu_snapshot, ctx).await?;
                 }
-                let next_state = DpuInitState::Init
-                    .next_state_with_all_dpus_updated(&state.managed_state)?;
+                let next_state =
+                    DpuInitState::Init.next_state_with_all_dpus_updated(&state.managed_state)?;
                 Ok(StateHandlerOutcome::transition(next_state))
             }
         }

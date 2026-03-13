@@ -285,25 +285,23 @@ async fn refresh_bmc_secret_if_changed<R: K8sConfigRepository>(
     }
 }
 
-/// DPUNode name used by the DPF operator: `dpu-node-{node_id}`.
-/// `node_id` should be a compact, stable host identifier derived from the
-/// host's BMC MAC address (e.g. `01-02-03-04-05-06`), not a full MachineId.
+/// DPUNode CR name: `node-{node_id}`.
+/// `node_id` is a compact, stable machine identifier (e.g. `01-02-03-04-05-06`).
 /// The DPF CRD limits resource names to 48 characters.
-pub fn dpu_node_name(node_id: &str) -> String {
-    format!("dpu-node-{}", node_id)
+pub fn dpu_node_cr_name(node_id: &str) -> String {
+    format!("node-{}", node_id)
 }
 
-/// DPU resource name: `dpu-node-{node_id}-{dpu_device_name}`.
-/// Both `node_id` and `dpu_device_name` should be compact identifiers derived
-/// from BMC MAC addresses to keep the combined name within the 48-char K8s
-/// resource name limit.
-pub fn dpu_name(dpu_device_name: &str, node_id: &str) -> String {
-    format!("dpu-node-{}-{}", node_id, dpu_device_name)
+/// DPU CR name: `node-{node_id}-device-{device_id}`.
+/// Both identifiers must be compact enough to keep the combined name within
+/// the 48-char K8s resource name limit.
+pub fn dpu_cr_name(device_id: &str, node_id: &str) -> String {
+    format!("{}-device-{}", dpu_node_cr_name(node_id), device_id)
 }
 
-/// Extract the node ID from a DPUNode name by stripping the `dpu-node-` prefix.
-pub fn node_id_from_node_name(node_name: &str) -> &str {
-    node_name.strip_prefix("dpu-node-").unwrap_or(node_name)
+/// Extract the node ID from a DPUNode CR name by stripping the `node-` prefix.
+pub fn node_id_from_dpu_node_cr_name(node_cr_name: &str) -> &str {
+    node_cr_name.strip_prefix("node-").unwrap_or(node_cr_name)
 }
 
 impl<R, L: ResourceLabeler> DpfSdk<R, L> {
@@ -704,11 +702,11 @@ impl<R: DpuDeviceRepository, L: ResourceLabeler> DpfSdk<R, L> {
     /// This operation is idempotent - if the device already exists, it will be
     /// skipped. This handles state machine retries gracefully.
     pub async fn register_dpu_device(&self, info: DpuDeviceInfo) -> Result<(), DpfError> {
-        let device_name = info.device_name.clone();
+        let device_name = info.device_id.clone();
 
         let device = DPUDevice {
             metadata: ObjectMeta {
-                name: Some(info.device_name.clone()),
+                name: Some(info.device_id.clone()),
                 namespace: Some(self.namespace.clone()),
                 labels: {
                     let labels = self.labeler.device_labels(&info);
@@ -771,7 +769,7 @@ impl<R: DpuNodeRepository, L: ResourceLabeler> DpfSdk<R, L> {
     /// updated with the new configuration. This is important for multi-DPU setups
     /// where multiple concurrent state machine invocations may call this method.
     pub async fn register_dpu_node(&self, info: DpuNodeInfo) -> Result<(), DpfError> {
-        let node_name = dpu_node_name(&info.node_id);
+        let node_name = dpu_node_cr_name(&info.node_id);
 
         let node = DPUNode {
             metadata: ObjectMeta {
@@ -790,7 +788,7 @@ impl<R: DpuNodeRepository, L: ResourceLabeler> DpfSdk<R, L> {
             },
             spec: DpuNodeSpec {
                 dpus: Some(
-                    info.dpu_device_names
+                    info.device_ids
                         .into_iter()
                         .map(|id| DpuNodeDpus { name: id })
                         .collect(),
@@ -879,17 +877,17 @@ impl<R: DpuRepository, L> DpfSdk<R, L> {
         dpu_device_name: &str,
         node_name: &str,
     ) -> Result<DpuPhase, DpfError> {
-        let node_id = node_id_from_node_name(node_name);
-        let dpu_name = dpu_name(dpu_device_name, node_id);
-        let dpu = DpuRepository::get(&*self.repo, &dpu_name, &self.namespace).await?;
+        let dpf_id = node_id_from_dpu_node_cr_name(node_name);
+        let cr_name = dpu_cr_name(dpu_device_name, dpf_id);
+        let dpu = DpuRepository::get(&*self.repo, &cr_name, &self.namespace).await?;
 
         let Some(dpu) = dpu else {
-            return Err(DpfError::not_found("DPU", dpu_name));
+            return Err(DpfError::not_found("DPU", cr_name));
         };
 
         let Some(status) = dpu.status else {
             return Err(DpfError::InvalidState(format!(
-                "DPU {dpu_name} has no status"
+                "DPU {cr_name} has no status"
             )));
         };
 
@@ -906,9 +904,9 @@ impl<R: DpuRepository, L> DpfSdk<R, L> {
         dpu_device_name: &str,
         node_name: &str,
     ) -> Result<(), DpfError> {
-        let node_id = node_id_from_node_name(node_name);
-        let dpu_name = dpu_name(dpu_device_name, node_id);
-        DpuRepository::delete(&*self.repo, &dpu_name, &self.namespace).await
+        let dpf_id = node_id_from_dpu_node_cr_name(node_name);
+        let cr_name = dpu_cr_name(dpu_device_name, dpf_id);
+        DpuRepository::delete(&*self.repo, &cr_name, &self.namespace).await
     }
 }
 
@@ -1005,10 +1003,10 @@ impl<R: DpuRepository + DpuNodeRepository + DpuDeviceRepository, L: ResourceLabe
         dpu_device_name: &str,
         node_name: &str,
     ) -> Result<(), DpfError> {
-        let node_id = node_id_from_node_name(node_name);
-        let dpu_name = dpu_name(dpu_device_name, node_id);
-        if let Err(e) = DpuRepository::delete(&*self.repo, &dpu_name, &self.namespace).await {
-            tracing::warn!("Failed to delete DPU {}: {}", dpu_name, e);
+        let dpf_id = node_id_from_dpu_node_cr_name(node_name);
+        let cr_name = dpu_cr_name(dpu_device_name, dpf_id);
+        if let Err(e) = DpuRepository::delete(&*self.repo, &cr_name, &self.namespace).await {
+            tracing::warn!("Failed to delete DPU {}: {}", cr_name, e);
         }
         if let Err(e) =
             DpuDeviceRepository::delete(&*self.repo, dpu_device_name, &self.namespace).await
@@ -1347,7 +1345,7 @@ mod tests {
             .unwrap();
 
         let info = DpuDeviceInfo {
-            device_name: "dpu-001".to_string(),
+            device_id: "dpu-001".to_string(),
             dpu_bmc_ip: "10.0.0.10".to_string(),
             host_bmc_ip: "10.0.0.1".to_string(),
             serial_number: "SN123456".to_string(),
@@ -1375,7 +1373,7 @@ mod tests {
         let info = DpuNodeInfo {
             node_id: "host-001".to_string(),
             host_bmc_ip: "10.0.0.1".to_string(),
-            dpu_device_names: vec!["dpu-001".to_string(), "dpu-002".to_string()],
+            device_ids: vec!["dpu-001".to_string(), "dpu-002".to_string()],
             host_machine_id: "host-aaa".to_string(),
         };
 
@@ -1385,10 +1383,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(nodes.len(), 1);
-        assert_eq!(
-            nodes[0].metadata.name,
-            Some("dpu-node-host-001".to_string())
-        );
+        assert_eq!(nodes[0].metadata.name, Some("node-host-001".to_string()));
         assert_eq!(nodes[0].spec.dpus.as_ref().unwrap().len(), 2);
     }
 
@@ -1401,7 +1396,7 @@ mod tests {
             .unwrap();
 
         let info = DpuDeviceInfo {
-            device_name: "dpu-001".to_string(),
+            device_id: "dpu-001".to_string(),
             dpu_bmc_ip: "10.0.0.10".to_string(),
             host_bmc_ip: "10.0.0.1".to_string(),
             serial_number: "SN123456".to_string(),
@@ -1435,7 +1430,7 @@ mod tests {
         let info = DpuNodeInfo {
             node_id: "host-001".to_string(),
             host_bmc_ip: "10.0.0.1".to_string(),
-            dpu_device_names: vec!["dpu-001".to_string()],
+            device_ids: vec!["dpu-001".to_string()],
             host_machine_id: "host-aaa".to_string(),
         };
 
@@ -1446,7 +1441,7 @@ mod tests {
             .unwrap();
         assert_eq!(nodes.len(), 1);
 
-        sdk.delete_dpu_node("dpu-node-host-001").await.unwrap();
+        sdk.delete_dpu_node("node-host-001").await.unwrap();
 
         let nodes = DpuNodeRepository::list(&mock, TEST_NAMESPACE)
             .await
@@ -1494,7 +1489,7 @@ mod tests {
             .unwrap();
 
         let info = DpuDeviceInfo {
-            device_name: "dpu-001".to_string(),
+            device_id: "dpu-001".to_string(),
             dpu_bmc_ip: "10.0.0.10".to_string(),
             host_bmc_ip: "10.0.0.1".to_string(),
             serial_number: "SN123456".to_string(),
@@ -1534,7 +1529,7 @@ mod tests {
             .unwrap();
 
         let info = DpuDeviceInfo {
-            device_name: "dpu-001".to_string(),
+            device_id: "dpu-001".to_string(),
             dpu_bmc_ip: "10.0.0.10".to_string(),
             host_bmc_ip: "10.0.0.1".to_string(),
             serial_number: "SN123456".to_string(),
@@ -1563,7 +1558,7 @@ mod tests {
         let info = DpuNodeInfo {
             node_id: "host-001".to_string(),
             host_bmc_ip: "10.0.0.1".to_string(),
-            dpu_device_names: vec!["dpu-001".to_string()],
+            device_ids: vec!["dpu-001".to_string()],
             host_machine_id: "host-aaa".to_string(),
         };
 
@@ -1594,7 +1589,7 @@ mod tests {
         let info = DpuNodeInfo {
             node_id: "host-001".to_string(),
             host_bmc_ip: "10.0.0.1".to_string(),
-            dpu_device_names: vec!["dpu-001".to_string()],
+            device_ids: vec!["dpu-001".to_string()],
             host_machine_id: "host-aaa".to_string(),
         };
 
@@ -1658,7 +1653,7 @@ mod tests {
             .unwrap();
 
         let device_info = DpuDeviceInfo {
-            device_name: "dpu-001".to_string(),
+            device_id: "dpu-001".to_string(),
             dpu_bmc_ip: "10.0.0.10".to_string(),
             host_bmc_ip: "10.0.0.1".to_string(),
             serial_number: "SN123".to_string(),
@@ -1667,7 +1662,7 @@ mod tests {
         };
         sdk.register_dpu_device(device_info).await.unwrap();
 
-        let dpu_name = "dpu-node-dpu-001-dpu-001";
+        let dpu_name = "node-dpu-001-device-dpu-001";
         let dpu = DPU {
             metadata: ObjectMeta {
                 name: Some(dpu_name.to_string()),
@@ -1680,7 +1675,7 @@ mod tests {
                 cluster: None,
                 dpu_device_name: "dpu-001".to_string(),
                 dpu_flavor: Some("carbide-dpu-flavor".to_string()),
-                dpu_node_name: "dpu-node-dpu-001".to_string(),
+                dpu_node_name: "node-dpu-001".to_string(),
                 node_effect: None,
                 pci_address: None,
                 serial_number: "SN123".to_string(),
@@ -1707,7 +1702,7 @@ mod tests {
             .unwrap()
             .insert(format!("{}/{}", TEST_NAMESPACE, dpu_name), dpu);
 
-        sdk.reprovision_dpu("dpu-001", "dpu-node-dpu-001")
+        sdk.reprovision_dpu("dpu-001", "node-dpu-001")
             .await
             .unwrap();
 
@@ -1736,7 +1731,7 @@ mod tests {
             .unwrap();
 
         let info1 = DpuDeviceInfo {
-            device_name: "dpu-001".to_string(),
+            device_id: "dpu-001".to_string(),
             dpu_bmc_ip: "10.0.0.10".to_string(),
             host_bmc_ip: "10.0.0.1".to_string(),
             serial_number: "SN111".to_string(),
@@ -1745,7 +1740,7 @@ mod tests {
         };
 
         let info2 = DpuDeviceInfo {
-            device_name: "dpu-002".to_string(),
+            device_id: "dpu-002".to_string(),
             dpu_bmc_ip: "10.0.0.20".to_string(),
             host_bmc_ip: "10.0.0.2".to_string(),
             serial_number: "SN222".to_string(),
@@ -1918,7 +1913,7 @@ mod tests {
             .insert(SdkMock::key(&terminating_device), terminating_device);
 
         let info = DpuDeviceInfo {
-            device_name: "dpu-001".to_string(),
+            device_id: "dpu-001".to_string(),
             dpu_bmc_ip: "10.0.0.10".to_string(),
             host_bmc_ip: "10.0.0.1".to_string(),
             serial_number: "SN123456".to_string(),
@@ -1963,7 +1958,7 @@ mod tests {
             .insert(SdkMock::key(&existing_device), existing_device);
 
         let info = DpuDeviceInfo {
-            device_name: "dpu-001".to_string(),
+            device_id: "dpu-001".to_string(),
             dpu_bmc_ip: "10.0.0.10".to_string(),
             host_bmc_ip: "10.0.0.1".to_string(),
             serial_number: "SN123456".to_string(),
@@ -1981,7 +1976,7 @@ mod tests {
             .await
             .unwrap();
 
-        let node_name = dpu_node_name("host-001");
+        let node_name = dpu_node_cr_name("host-001");
         let terminating_node = DPUNode {
             metadata: ObjectMeta {
                 name: Some(node_name.clone()),
@@ -2004,7 +1999,7 @@ mod tests {
         let info = DpuNodeInfo {
             node_id: "host-001".to_string(),
             host_bmc_ip: "10.0.0.1".to_string(),
-            dpu_device_names: vec!["dpu-001".to_string()],
+            device_ids: vec!["dpu-001".to_string()],
             host_machine_id: "host-aaa".to_string(),
         };
         let err = sdk.register_dpu_node(info).await.unwrap_err();
@@ -2022,7 +2017,7 @@ mod tests {
             .await
             .unwrap();
 
-        let node_name = dpu_node_name("host-001");
+        let node_name = dpu_node_cr_name("host-001");
         let existing_node = DPUNode {
             metadata: ObjectMeta {
                 name: Some(node_name.clone()),
@@ -2044,7 +2039,7 @@ mod tests {
         let info = DpuNodeInfo {
             node_id: "host-001".to_string(),
             host_bmc_ip: "10.0.0.1".to_string(),
-            dpu_device_names: vec!["dpu-001".to_string()],
+            device_ids: vec!["dpu-001".to_string()],
             host_machine_id: "host-aaa".to_string(),
         };
         sdk.register_dpu_node(info).await.unwrap();

@@ -495,12 +495,16 @@ pub(crate) async fn admin_force_delete_machine(
         if let Some(ref ops) = api.dpf_sdk
             && !dpu_machines.is_empty()
         {
-            let node_name = carbide_dpf::dpu_node_name(
-                &crate::dpf::node_id(machine).map_err(CarbideError::GenericErrorFromReport)?,
-            );
+            let host_dpf_id = machine
+                .dpf_id()
+                .ok_or_else(|| CarbideError::internal("BMC MAC not set for host".into()))?;
+            let node_name = carbide_dpf::dpu_node_cr_name(&host_dpf_id);
             let dpu_device_names: Vec<String> = dpu_machines
                 .iter()
-                .map(|d| crate::dpf::device_name(d).map_err(CarbideError::GenericErrorFromReport))
+                .map(|d| {
+                    d.dpf_id()
+                        .ok_or_else(|| CarbideError::internal("BMC MAC not set for DPU".into()))
+                })
                 .collect::<Result<_, _>>()?;
             ops.force_delete_host(&node_name, &dpu_device_names)
                 .await

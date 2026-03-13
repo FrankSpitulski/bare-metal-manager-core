@@ -116,13 +116,13 @@ async fn test_release_maintenance_hold_sets_annotation_false() {
     // Pre-populate a DPUNodeMaintenance with hold annotation set to "true"
     let maint = DPUNodeMaintenance {
         metadata: ObjectMeta {
-            name: Some("dpu-node-host-001-hold".into()),
+            name: Some("node-host-001-hold".into()),
             namespace: Some(TEST_NS.into()),
             annotations: Some(BTreeMap::from([(HOLD_ANNOTATION.into(), "true".into())])),
             ..Default::default()
         },
         spec: DpuNodeMaintenanceSpec {
-            dpu_node_name: "dpu-node-host-001".into(),
+            dpu_node_name: "node-host-001".into(),
             node_effect: None,
             requestor: None,
         },
@@ -131,7 +131,7 @@ async fn test_release_maintenance_hold_sets_annotation_false() {
     mock.insert(&maint);
 
     // Verify hold is true
-    let m = mock.get("dpu-node-host-001-hold").unwrap();
+    let m = mock.get("node-host-001-hold").unwrap();
     assert_eq!(
         m.metadata
             .annotations
@@ -142,12 +142,10 @@ async fn test_release_maintenance_hold_sets_annotation_false() {
     );
 
     // Release the maintenance hold
-    sdk.release_maintenance_hold("dpu-node-host-001")
-        .await
-        .unwrap();
+    sdk.release_maintenance_hold("node-host-001").await.unwrap();
 
     // Hold annotation should now be "false"
-    let m = mock.get("dpu-node-host-001-hold").unwrap();
+    let m = mock.get("node-host-001-hold").unwrap();
     assert_eq!(
         m.metadata
             .annotations
@@ -167,7 +165,7 @@ async fn test_release_maintenance_hold_noop_when_cr_missing() {
         .unwrap();
 
     // No DPUNodeMaintenance CR exists — release_maintenance_hold should succeed as a no-op
-    let result = sdk.release_maintenance_hold("dpu-node-nonexistent").await;
+    let result = sdk.release_maintenance_hold("node-nonexistent").await;
     assert!(
         result.is_ok(),
         "expected Ok for missing CR, got: {result:?}"

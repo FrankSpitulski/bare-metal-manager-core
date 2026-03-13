@@ -148,7 +148,7 @@ async fn dpu_device_names(pool: &sqlx::PgPool, mh: &TestManagedHost) -> HashSet<
             .await
             .unwrap()
             .unwrap();
-        names.insert(crate::dpf::device_name(&dpu).unwrap());
+        names.insert(dpu.dpf_id().unwrap());
     }
     names
 }
@@ -333,7 +333,7 @@ fn capturing_mock(
     let mut mock = MockDpfOperations::new();
 
     mock.expect_register_dpu_device().returning(move |info| {
-        registered_devices.lock().unwrap().push(info.device_name);
+        registered_devices.lock().unwrap().push(info.device_id);
         Ok(())
     });
 

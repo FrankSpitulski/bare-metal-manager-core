@@ -181,7 +181,7 @@ async fn test_register_devices_node_and_force_delete() {
     // Register devices
     for i in 1..=2 {
         let info = DpuDeviceInfo {
-            device_name: format!("dpu-{}", i),
+            device_id: format!("dpu-{}", i),
             dpu_bmc_ip: format!("192.168.1.{}", 100 + i),
             host_bmc_ip: "192.168.1.1".to_string(),
             serial_number: format!("SN-{}", i),
@@ -195,7 +195,7 @@ async fn test_register_devices_node_and_force_delete() {
     let node_info = DpuNodeInfo {
         node_id: "host-001".to_string(),
         host_bmc_ip: "192.168.1.1".to_string(),
-        dpu_device_names: vec!["dpu-1".to_string(), "dpu-2".to_string()],
+        device_ids: vec!["dpu-1".to_string(), "dpu-2".to_string()],
         host_machine_id: "host-001-id".to_string(),
     };
     sdk.register_dpu_node(node_info).await.unwrap();
@@ -214,7 +214,7 @@ async fn test_register_devices_node_and_force_delete() {
 
     // Force delete
     let dpu_ids = vec!["dpu-1".to_string(), "dpu-2".to_string()];
-    sdk.force_delete_host("dpu-node-host-001", &dpu_ids)
+    sdk.force_delete_host("node-host-001", &dpu_ids)
         .await
         .unwrap();
 
