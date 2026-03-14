@@ -689,3 +689,46 @@ async fn test_multi_dpu_reprovisioning_per_dpu(pool: sqlx::PgPool) {
         }
     }
 }
+
+/// Unknown DPF state during reprovisioning transitions to Provisioning.
+#[crate::sqlx_test]
+async fn test_unknown_dpf_state_transitions_to_provisioning_during_reprovision(pool: sqlx::PgPool) {
+    let device_ready = Arc::new(AtomicBool::new(true));
+    let dpf_sdk: Arc<dyn crate::dpf::DpfOperations> = Arc::new(provisioning_mock(device_ready));
+    let mut config = get_config();
+    config.dpf = dpf_config();
+
+    let env = create_test_env_with_overrides(
+        pool.clone(),
+        TestEnvOverrides::with_config(config).with_dpf_sdk(dpf_sdk),
+    )
+    .await;
+
+    let mh = timeout(TEST_TIMEOUT, create_managed_host_with_dpf(&env))
+        .await
+        .expect("timed out during initial provisioning");
+
+    set_reprovision_dpf_state(&pool, &mh.id, &mh.dpu_ids, DpfState::Unknown).await;
+
+    timeout(TEST_TIMEOUT, env.run_machine_state_controller_iteration())
+        .await
+        .expect("timed out during state controller iteration");
+
+    let host_state = get_host_state(&env, &mh).await;
+    match &host_state {
+        ManagedHostState::DPUReprovision { dpu_states } => {
+            for (dpu_id, state) in &dpu_states.states {
+                assert!(
+                    matches!(
+                        state,
+                        ReprovisionState::DpfStates {
+                            substate: DpfState::Provisioning
+                        }
+                    ),
+                    "DPU {dpu_id} should transition from Unknown to Provisioning, got: {state:?}"
+                );
+            }
+        }
+        other => panic!("Expected DPUReprovision, got: {other:?}"),
+    }
+}

@@ -796,3 +796,87 @@ async fn test_waiting_for_ready_reboot_blocked_until_all_dpus_discover(pool: sql
         actions2
     );
 }
+
+/// Write a raw DPUInit state with a bogus `dpfstate` tag to simulate
+/// a stale/invalid state stored by a previous implementation.
+async fn write_unknown_dpf_init_state(
+    pool: &sqlx::PgPool,
+    host_id: &MachineId,
+    dpu_id: &MachineId,
+) {
+    let state_json: serde_json::Value = serde_json::json!({
+        "state": "dpuinit",
+        "dpu_states": {
+            "states": {
+                dpu_id.to_string(): {
+                    "dpustate": "dpfstates",
+                    "state": {
+                        "dpfstate": "oldimplstate"
+                    }
+                }
+            }
+        }
+    });
+    let version = format!("V999-T{}", chrono::Utc::now().timestamp_micros());
+    sqlx::query(
+        "UPDATE machines SET \
+            controller_state = $1, \
+            controller_state_version = $2, \
+            controller_state_outcome = NULL \
+         WHERE id = $3",
+    )
+    .bind(sqlx::types::Json(&state_json))
+    .bind(&version)
+    .bind(host_id)
+    .execute(pool)
+    .await
+    .unwrap();
+}
+
+/// Unknown DPF state in DPUInit transitions to Provisioning.
+#[crate::sqlx_test]
+async fn test_unknown_dpf_state_transitions_to_provisioning(pool: sqlx::PgPool) {
+    let mut mock = MockDpfOperations::new();
+    expect_provisioning(&mut mock);
+    mock.expect_get_dpu_phase()
+        .returning(|_, _| Ok(DpuPhase::Ready));
+    mock.expect_release_maintenance_hold().returning(|_| Ok(()));
+    mock.expect_is_reboot_required().returning(|_| Ok(false));
+
+    let dpf_sdk: Arc<dyn crate::dpf::DpfOperations> = Arc::new(mock);
+    let mut config = get_config();
+    config.dpf = dpf_config();
+
+    let env = create_test_env_with_overrides(
+        pool.clone(),
+        TestEnvOverrides::with_config(config).with_dpf_sdk(dpf_sdk),
+    )
+    .await;
+
+    let mh = timeout(TEST_TIMEOUT, create_managed_host_with_dpf(&env))
+        .await
+        .expect("timed out during initial provisioning");
+
+    write_unknown_dpf_init_state(&pool, &mh.id, &mh.dpu_ids[0]).await;
+
+    timeout(TEST_TIMEOUT, env.run_machine_state_controller_iteration())
+        .await
+        .expect("timed out during state controller iteration");
+
+    let host_state = get_host_state(&env, &mh).await;
+    match &host_state {
+        ManagedHostState::DPUInit { dpu_states } => {
+            let dpu_state = &dpu_states.states[&mh.dpu_ids[0]];
+            assert!(
+                matches!(
+                    dpu_state,
+                    DpuInitState::DpfStates {
+                        state: DpfState::Provisioning
+                    }
+                ),
+                "Unknown DPF state should transition to Provisioning, got: {dpu_state:?}"
+            );
+        }
+        other => panic!("Expected DPUInit, got: {other:?}"),
+    }
+}

@@ -138,6 +138,14 @@ pub trait NextState {
                     &state.dpu_snapshots,
                     all_machine_ids,
                 ),
+                DpfState::Unknown => ReprovisionState::DpfStates {
+                    substate: DpfState::Provisioning,
+                }
+                .next_state_with_all_dpus_updated(
+                    &state.managed_state,
+                    &state.dpu_snapshots,
+                    all_machine_ids,
+                ),
             },
             _ => Err(StateHandlerError::InvalidState(format!(
                 "Unhandled {current_reprovision_state} state for all dpu handling."

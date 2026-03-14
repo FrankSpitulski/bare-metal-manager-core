@@ -1718,6 +1718,10 @@ pub enum DpfState {
     DeviceReady,
     /// Triggering reprovisioning via DPF operator.
     Reprovisioning,
+    /// Catch-all for unrecognized variant tags stored by a previous implementation.
+    /// The state handler transitions this back to `Provisioning`.
+    #[serde(other)]
+    Unknown,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Eq, PartialEq, PartialOrd, Ord)]
@@ -2843,6 +2847,17 @@ mod tests {
                 "round-trip for {:?} must preserve value",
                 expected
             );
+        }
+    }
+
+    #[test]
+    fn test_dpf_state_unknown_variant_falls_back() {
+        for json in [
+            r#"{"dpfstate":"somethingold"}"#,
+            r#"{"dpfstate":"bogus","extra":"field"}"#,
+        ] {
+            let parsed: DpfState = serde_json::from_str(json).unwrap();
+            assert_eq!(parsed, DpfState::Unknown);
         }
     }
 }

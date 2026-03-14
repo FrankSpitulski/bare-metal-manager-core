@@ -397,5 +397,10 @@ pub async fn handle_dpf_state(
         }
         DpfState::DeviceReady => handle_dpf_device_ready(state),
         DpfState::Reprovisioning => handle_dpf_reprovisioning(state, dpu_snapshot, dpf_sdk).await,
+        DpfState::Unknown => {
+            tracing::warn!(dpu_id = %dpu_snapshot.id, "unknown DPF state in DB, transitioning to provisioning");
+            let next = set_one_dpu_dpf_state(state, &dpu_snapshot.id, DpfState::Provisioning)?;
+            Ok(StateHandlerOutcome::transition(next))
+        }
     }
 }
