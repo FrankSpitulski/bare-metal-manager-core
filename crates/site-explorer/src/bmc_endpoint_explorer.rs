@@ -21,6 +21,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
+use bmc_explorer::Product;
 use carbide_ipmi::IPMITool;
 use carbide_redfish::boot_interface::BootInterfaceTarget;
 use carbide_redfish::libredfish::RedfishClientPool;
@@ -122,6 +123,15 @@ impl BmcEndpointExplorer {
         };
 
         Ok(password)
+    }
+
+    async fn get_sitewide_dpu_bmc_service_password(
+        &self,
+        create_if_missing: bool,
+    ) -> Result<String, EndpointExplorationError> {
+        self.credential_client
+            .get_sitewide_dpu_bmc_service_password(create_if_missing)
+            .await
     }
 
     /// Resolve which site-wide BMC root version is currently live from
@@ -262,6 +272,17 @@ impl BmcEndpointExplorer {
             username: user,
             password: new_password,
         })
+    }
+
+    async fn rotate_dpu_service_password_from_factory_defaults(
+        &self,
+        bmc_ip_address: SocketAddr,
+        root_credentials: &Credentials,
+    ) -> Result<(), EndpointExplorationError> {
+        let new_password = self.get_sitewide_dpu_bmc_service_password(true).await?;
+        self.redfish_client
+            .set_bf4_dpu_service_password(bmc_ip_address, root_credentials.clone(), new_password)
+            .await
     }
 
     pub async fn generate_exploration_report(
@@ -788,7 +809,9 @@ impl EndpointExplorer for BmcEndpointExplorer {
                 //   1) Login with expected/factory credentials
                 //   2) Rotate the BMC root password to the sitewide root password
                 //   3) Store the per-BMC vault entry
-                //   4) Generate the report
+                //   4) On BF4, rotate the BMC `service` account (required for
+                //      SSH access) to the site-wide DPU BMC service password
+                //   5) Generate the report
                 //
                 // If the expected/factory credentials fail (Unauthorized), fall
                 // back to the configured sitewide root password without rotation.
@@ -813,6 +836,12 @@ impl EndpointExplorer for BmcEndpointExplorer {
                 } else {
                     None
                 };
+
+                let product = self
+                    .redfish_client
+                    .get_redfish_product(bmc_ip_address)
+                    .await?;
+                let is_bf4_dpu = bmc_explorer::is_bf4_product(product.as_deref().map(Product::new));
 
                 let bmc_cred_data = match expected {
                     Some(v) => {
@@ -852,7 +881,7 @@ impl EndpointExplorer for BmcEndpointExplorer {
                     }
                 };
 
-                match self
+                let bmc_credentials = match self
                     .set_sitewide_bmc_root_password(
                         bmc_ip_address,
                         bmc_mac_address,
@@ -861,36 +890,36 @@ impl EndpointExplorer for BmcEndpointExplorer {
                     )
                     .await
                 {
-                    Ok(bmc_credentials) => {
-                        self.generate_exploration_report(
-                            bmc_ip_address,
-                            bmc_credentials,
-                            None,
-                            Some(vendor),
-                        )
-                        .await?
-                    }
+                    Ok(bmc_credentials) => bmc_credentials,
                     Err(
                         EndpointExplorationError::Unauthorized { .. }
                         | EndpointExplorationError::MissingCredentials { .. },
                     ) => {
-                        let bmc_credentials = self
-                            .try_sitewide_bmc_root_credentials(
-                                bmc_ip_address,
-                                bmc_mac_address,
-                                bmc_cred_data.username,
-                            )
-                            .await?;
-                        self.generate_exploration_report(
+                        self.try_sitewide_bmc_root_credentials(
                             bmc_ip_address,
-                            bmc_credentials,
-                            None,
-                            Some(vendor),
+                            bmc_mac_address,
+                            bmc_cred_data.username,
                         )
                         .await?
                     }
                     Err(e) => return Err(e),
+                };
+
+                if is_bf4_dpu {
+                    self.rotate_dpu_service_password_from_factory_defaults(
+                        bmc_ip_address,
+                        &bmc_credentials,
+                    )
+                    .await?;
                 }
+
+                self.generate_exploration_report(
+                    bmc_ip_address,
+                    bmc_credentials,
+                    None,
+                    Some(vendor),
+                )
+                .await?
             }
             Err(e) => {
                 return Err(e);
