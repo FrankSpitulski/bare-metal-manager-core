@@ -177,7 +177,7 @@ NICo has its own `BMCVendor` enum, distinct from libredfish's `RedfishVendor`. I
 
 1. **Update the** `bmc_vendor()` **mapping** in `crates/redfish/src/libredfish/conv.rs` so libredfish's vendor detection flows into NICo's enum.
 
-1. **Extend parsing** in `From<&str>`, `from_udev_dmi()`, and `from_tls_issuer()` as applicable.
+1. **Extend parsing** in `From<&str>` and `from_udev_dmi()` as applicable.
 
 ### `HwType` enum (`crates/bmc-explorer/src/hw/mod.rs`)
 
