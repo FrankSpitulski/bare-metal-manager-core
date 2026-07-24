@@ -7488,6 +7488,7 @@ dependencies = [
  "csv",
  "eyre",
  "futures",
+ "hex",
  "ipnet",
  "libredfish",
  "librms",
