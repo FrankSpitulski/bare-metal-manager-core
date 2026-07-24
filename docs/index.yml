@@ -143,6 +143,8 @@ navigation:
           path: configuration/secrets-storage.md
         - page: Host Naming
           path: configuration/host-naming.md
+        - page: DNS
+          path: configuration/dns.md
         - page: Component Manager RMS Backends
           path: configuration/component-manager-rms.md
 
