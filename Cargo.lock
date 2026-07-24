@@ -2223,6 +2223,8 @@ dependencies = [
  "carbide-api-db",
  "carbide-api-model",
  "carbide-ib-fabric",
+ "carbide-instrument",
+ "carbide-test-support",
  "carbide-uuid",
  "config-version",
  "eyre",
