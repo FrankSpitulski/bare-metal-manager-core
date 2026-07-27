@@ -2404,6 +2404,7 @@ dependencies = [
  "base64",
  "bmc-mock",
  "carbide-api-model",
+ "carbide-ipmi",
  "carbide-network",
  "carbide-rpc",
  "carbide-test-support",
