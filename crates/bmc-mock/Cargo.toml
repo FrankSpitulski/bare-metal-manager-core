@@ -47,6 +47,7 @@ nv-redfish = { workspace = true, features = ["bmc-http"] }
 nix = { features = ["fs"], workspace = true }
 rand = { workspace = true }
 regex = { workspace = true }
+quick-xml = { workspace = true }
 rustls = { workspace = true }
 rustls-pemfile = { workspace = true }
 serde = { features = ["derive"], workspace = true }
@@ -66,3 +67,6 @@ tokio = { features = ["test-util"], workspace = true }
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }
