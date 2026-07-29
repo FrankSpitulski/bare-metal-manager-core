@@ -117,6 +117,8 @@ type APIClient struct {
 
 	TaskAPI *TaskAPIService
 
+	TaskRunAPI *TaskRunAPIService
+
 	TenantAPI *TenantAPIService
 
 	TenantAccountAPI *TenantAccountAPIService
@@ -185,6 +187,7 @@ func NewAPIClient(cfg *Configuration) *APIClient {
 	c.SiteExplorerAPI = (*SiteExplorerAPIService)(&c.common)
 	c.SubnetAPI = (*SubnetAPIService)(&c.common)
 	c.TaskAPI = (*TaskAPIService)(&c.common)
+	c.TaskRunAPI = (*TaskRunAPIService)(&c.common)
 	c.TenantAPI = (*TenantAPIService)(&c.common)
 	c.TenantAccountAPI = (*TenantAccountAPIService)(&c.common)
 	c.TenantIdentityAPI = (*TenantIdentityAPIService)(&c.common)
