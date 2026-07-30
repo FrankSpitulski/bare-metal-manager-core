@@ -979,6 +979,22 @@ impl SiteExplorer {
             create_machines_res?;
         }
 
+        let reconcile_desired_boot_interfaces_start = Instant::now();
+        let reconcile_desired_boot_interfaces_res = self
+            .machine_creator
+            .reconcile_desired_boot_interfaces()
+            .await;
+        metrics.record_phase_latency(
+            "reconcile_desired_boot_interfaces",
+            reconcile_desired_boot_interfaces_start.elapsed(),
+        );
+        if let Err(error) = reconcile_desired_boot_interfaces_res {
+            tracing::warn!(
+                %error,
+                "Desired boot-interface reconciliation pass failed; a later Site Explorer run will retry"
+            );
+        }
+
         // Identify and create power shelves
         let identify_power_shelves_to_ingest_start = Instant::now();
         let explored_power_shelves = self.identify_power_shelves_to_ingest().await?;
