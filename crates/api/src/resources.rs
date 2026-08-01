@@ -34,7 +34,6 @@ use carbide_secrets::{
 };
 use db::work_lock_manager::{self, WorkLockManagerHandle};
 use eyre::WrapErr;
-use opentelemetry::metrics::Meter;
 use sqlx::postgres::PgSslMode;
 use sqlx::{ConnectOptions, PgPool};
 use sqlx_query_tracing::SQLX_STATEMENTS_LOG_LEVEL;
@@ -53,14 +52,13 @@ pub(crate) struct RuntimeResources {
 pub(crate) async fn setup_resources(
     carbide_config: &CarbideConfig,
     credential_config: &CredentialConfig,
-    meter: &Meter,
     join_set: &mut JoinSet<()>,
     cancel_token: &CancellationToken,
 ) -> eyre::Result<RuntimeResources> {
     let vault_config = vault_config_for_site(&credential_config.vault, carbide_config);
 
     // One vault client serves every credential vault role below.
-    let vault_client = create_vault_client(&vault_config, meter.clone())?;
+    let vault_client = create_vault_client(&vault_config)?;
 
     // Certificate vending is selected independently of the credential store.
     // SharedVault (the default) reuses `vault_client` (no second client or token
@@ -76,7 +74,6 @@ pub(crate) async fn setup_resources(
             trust_domain: vault_config.spiffe_trust_domain(),
             machine_base_path: vault_config.spiffe_machine_base_path(),
         },
-        meter.clone(),
     )?;
 
     let db_pool = connect_postgres(carbide_config).await?;

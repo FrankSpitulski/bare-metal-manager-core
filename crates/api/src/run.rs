@@ -110,7 +110,6 @@ pub async fn run(
     } = setup_resources(
         &carbide_config,
         &credential_config,
-        &meter,
         &mut join_set,
         &cancel_token,
     )
