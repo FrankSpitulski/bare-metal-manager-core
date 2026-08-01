@@ -15,26 +15,14 @@
  * limitations under the License.
  */
 
-pub mod args;
-mod list;
-mod show;
+use clap::Parser;
 
-pub use args::Args;
+#[derive(Parser, Debug, Clone)]
+#[command(after_long_help = "\
+EXAMPLES:
 
-use crate::cfg::run::Run;
-use crate::cfg::runtime::RuntimeContext;
-use crate::errors::CarbideCliResult;
+List the rack profiles available for expected racks:
+    $ nico-admin-cli rack profile list
 
-impl Run for Args {
-    async fn run(self, ctx: &mut RuntimeContext) -> CarbideCliResult<()> {
-        match self {
-            Args::List(args) => {
-                list::cmd::list_profiles(&ctx.api_client, args, &ctx.config).await?;
-            }
-            Args::Show(args) => {
-                show::cmd::show_profile(&ctx.api_client, args, &ctx.config).await?;
-            }
-        }
-        Ok(())
-    }
-}
+")]
+pub struct Args;
