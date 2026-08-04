@@ -1913,10 +1913,13 @@ mod tests {
     ) -> Result<Credentials, String> {
         let sim = Arc::new(RedfishSim::default());
         sim.set_service_root_product(Some(product.to_string()));
+        // Make the factory-default attempt fail so the fallback path is exercised.
         sim.set_enforce_auth(true);
+        // Model hardware retaining the site-wide password from its previous ingestion.
         sim.seed_user(username, "sitewide-password");
         sim.seed_user("service", "factory-service-password");
 
+        // Reproduce deletion by retaining only the site-wide fallback secret.
         let credential_manager = Arc::new(TestCredentialManager::default());
         credential_manager
             .set_credentials(
@@ -1957,13 +1960,10 @@ mod tests {
             .ok_or_else(|| "per-BMC credentials were not restored".to_string())
     }
 
-    /// Reingestion has no per-BMC Vault secret even though the hardware still
-    /// carries the site-wide password from its prior ingestion. For every DPU
-    /// generation, the factory attempt must fail authentication, after which
-    /// site-explorer validates the site-wide password and restores the
-    /// per-BMC secret with that generation's administrative username.
+    // Keep the production auth-throttle delay from slowing this fallback test.
     #[tokio::test(start_paused = true)]
     async fn reingested_dpus_restore_missing_bmc_credentials_from_sitewide_password() {
+        // Cover both generations because their administrative usernames differ.
         check_cases_async(
             [
                 Case {

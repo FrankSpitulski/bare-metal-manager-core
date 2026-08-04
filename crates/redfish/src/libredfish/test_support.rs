@@ -1423,6 +1423,7 @@ impl Redfish for RedfishSimClient {
     ) -> libredfish::RedfishFuture<'a, Result<Vec<String>, RedfishError>> {
         Box::pin(async move {
             let state = self.state.lock().unwrap();
+            // Check auth so credential fallback is observable.
             self.authorize(&state, "Systems")?;
             Ok(Vec::new())
         })
