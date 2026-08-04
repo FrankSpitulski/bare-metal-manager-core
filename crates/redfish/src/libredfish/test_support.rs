@@ -22,7 +22,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use async_trait::async_trait;
-use carbide_secrets::credentials::CredentialReader;
+use carbide_secrets::credentials::{CredentialReader, Credentials};
 use carbide_secrets::test_support::credentials::TestCredentialManager;
 use chrono::Utc;
 use libredfish::model::certificate::Certificate;
@@ -97,6 +97,7 @@ struct RedfishSimState {
     /// `Direct` credential whose password matches the seeded `users` entry, so
     /// credential-probe paths (e.g. `bmc_credentials_valid`) can be exercised.
     enforce_auth: bool,
+    auth_attempts: Vec<RedfishSimAuthAttempt>,
     /// When set, `get_accounts` fails with a non-authentication transport error
     /// (`503`), so callers' error-propagation paths can be exercised distinctly
     /// from an unauthorized rejection.
@@ -140,6 +141,13 @@ fn sim_http_error(status: http::StatusCode, url: &str, body: &str) -> RedfishErr
 pub struct CreateClientCall {
     pub host: String,
     pub vendor: Option<RedfishVendor>,
+}
+
+/// Credential and result observed when the simulator checks direct authentication.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RedfishSimAuthAttempt {
+    pub credentials: Credentials,
+    pub authorized: bool,
 }
 
 #[derive(Debug)]
@@ -344,6 +352,11 @@ impl RedfishSim {
     /// passed at a given call site.
     pub fn create_client_calls(&self) -> Vec<CreateClientCall> {
         self.state.lock().unwrap().create_client_calls.clone()
+    }
+
+    /// Return direct authentication checks in the order the simulator performed them.
+    pub fn auth_attempts(&self) -> Vec<RedfishSimAuthAttempt> {
+        self.state.lock().unwrap().auth_attempts.clone()
     }
 
     /// Seed a user account so calls like `change_password` /
@@ -584,15 +597,22 @@ impl RedfishSimClient {
     /// client was created with against the seeded `users`. Returns a `401`
     /// error on a mismatch (or a non-`Direct` credential); a no-op when
     /// enforcement is off, preserving the behavior existing tests rely on.
-    fn authorize(&self, state: &RedfishSimState, url: &str) -> Result<(), RedfishError> {
+    fn authorize(&self, state: &mut RedfishSimState, url: &str) -> Result<(), RedfishError> {
         if !state.enforce_auth {
             return Ok(());
         }
         let authorized = match &self.auth {
-            RedfishAuth::Direct(user, password) => state
-                .users
-                .get(user)
-                .is_some_and(|stored| stored == password),
+            RedfishAuth::Direct(username, password) => {
+                let authorized = state
+                    .users
+                    .get(username)
+                    .is_some_and(|stored| stored == password);
+                state.auth_attempts.push(RedfishSimAuthAttempt {
+                    credentials: Credentials::new(username.clone(), password.clone()),
+                    authorized,
+                });
+                authorized
+            }
             RedfishAuth::Anonymous | RedfishAuth::Key(_) => false,
         };
         if authorized {
@@ -856,7 +876,7 @@ impl Redfish for RedfishSimClient {
             if state.password_change_required {
                 return Err(RedfishError::PasswordChangeRequired);
             }
-            self.authorize(&state, "AccountService/Accounts")?;
+            self.authorize(&mut state, "AccountService/Accounts")?;
             if !state.users.contains_key(&s_user) {
                 return Err(RedfishError::UserNotFound(s_user));
             }
@@ -890,7 +910,7 @@ impl Redfish for RedfishSimClient {
                     error: message.clone(),
                 });
             }
-            self.authorize(&state, "AccountService/Accounts")?;
+            self.authorize(&mut state, "AccountService/Accounts")?;
             if !state.users.contains_key(&s_acct) {
                 return Err(RedfishError::UserNotFound(s_acct));
             }
@@ -1422,9 +1442,9 @@ impl Redfish for RedfishSimClient {
         &'a self,
     ) -> libredfish::RedfishFuture<'a, Result<Vec<String>, RedfishError>> {
         Box::pin(async move {
-            let state = self.state.lock().unwrap();
+            let mut state = self.state.lock().unwrap();
             // Check auth so credential fallback is observable.
-            self.authorize(&state, "Systems")?;
+            self.authorize(&mut state, "Systems")?;
             Ok(Vec::new())
         })
     }
@@ -1609,7 +1629,7 @@ impl Redfish for RedfishSimClient {
         Result<Vec<libredfish::model::account_service::ManagerAccount>, RedfishError>,
     > {
         Box::pin(async move {
-            let state = self.state.lock().unwrap();
+            let mut state = self.state.lock().unwrap();
             if state.get_accounts_error {
                 return Err(sim_http_error(
                     http::StatusCode::SERVICE_UNAVAILABLE,
@@ -1620,7 +1640,7 @@ impl Redfish for RedfishSimClient {
             // Reading the account collection is gated behind login on a real BMC,
             // so authorize the credential this client was created with (a no-op
             // unless enforcement is on).
-            self.authorize(&state, "AccountService/Accounts")?;
+            self.authorize(&mut state, "AccountService/Accounts")?;
             let accounts = state
                 .users
                 .keys()
