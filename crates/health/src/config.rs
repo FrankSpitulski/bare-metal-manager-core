@@ -542,6 +542,14 @@ pub struct OtlpTargetConfig {
     /// up.
     #[serde(default)]
     pub include_diagnostics: bool,
+
+    /// Emit per-alert detail on health report log records sent to this target.
+    ///
+    /// Disabled by default because alert messages are free-form and a fully
+    /// degraded endpoint can produce many of them. When enabled, health report
+    /// records carry a `health_report.alerts` attribute holding a JSON array.
+    #[serde(default)]
+    pub include_alert_details: bool,
 }
 
 impl OtlpTargetConfig {
@@ -1938,6 +1946,7 @@ mod tests {
             batch_size: 512,
             flush_interval: Duration::from_secs(2),
             include_diagnostics: false,
+            include_alert_details: false,
         }
     }
 
@@ -2642,6 +2651,7 @@ endpoint = "https://central.example:4317"
 batch_size = 1024
 flush_interval = "5s"
 include_diagnostics = true
+include_alert_details = true
 
 [targets.tls]
 ca_cert_path = "/central/ca.crt"
@@ -2663,6 +2673,8 @@ reload_interval = "30s"
         assert_eq!(targets[1].batch_size, 1024);
         assert_eq!(targets[1].flush_interval, Duration::from_secs(5));
         assert!(targets[1].include_diagnostics);
+        assert!(!targets[0].include_alert_details);
+        assert!(targets[1].include_alert_details);
 
         let tls = targets[1]
             .tls
@@ -2898,6 +2910,7 @@ reload_interval = "30s"
                             batch_size: 512,
                             flush_interval: Duration::from_secs(2),
                             include_diagnostics: false,
+                            include_alert_details: false,
                             tls: None,
                         }],
                     }),
@@ -2935,6 +2948,7 @@ reload_interval = "30s"
                             batch_size: 512,
                             flush_interval: Duration::from_secs(2),
                             include_diagnostics: true,
+                            include_alert_details: false,
                             tls: None,
                         }],
                     }),
@@ -2952,6 +2966,7 @@ reload_interval = "30s"
                                 batch_size: 512,
                                 flush_interval: Duration::from_secs(2),
                                 include_diagnostics: false,
+                                include_alert_details: false,
                                 tls: None,
                             },
                             OtlpTargetConfig {
@@ -2959,6 +2974,7 @@ reload_interval = "30s"
                                 batch_size: 512,
                                 flush_interval: Duration::from_secs(2),
                                 include_diagnostics: true,
+                                include_alert_details: false,
                                 tls: None,
                             },
                         ],
@@ -3004,6 +3020,7 @@ reload_interval = "30s"
                             batch_size: 512,
                             flush_interval: Duration::from_secs(2),
                             include_diagnostics: false,
+                            include_alert_details: false,
                             tls: None,
                         }],
                     }),
