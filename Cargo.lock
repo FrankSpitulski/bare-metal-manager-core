@@ -2082,6 +2082,8 @@ dependencies = [
  "mac_address",
  "metrics-endpoint",
  "nv-redfish",
+ "opentelemetry 0.32.0",
+ "opentelemetry-proto",
  "prometheus",
  "prost",
  "prost-types",
