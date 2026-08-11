@@ -27,6 +27,8 @@ use rustls_pki_types::DnsName;
 use serde::{Deserialize, Deserializer, Serialize};
 use url::Url;
 
+use crate::metrics::BmcLatencyAttribute;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Config {
@@ -1740,6 +1742,14 @@ pub struct MetricsConfig {
     pub endpoint: String,
     /// Prefix for all metrics, defaults to carbide_hardware_health
     pub prefix: String,
+    /// Emit per-request BMC latency histograms.
+    pub enable_bmc_latency_metrics: bool,
+    /// Label attributes emitted on the BMC latency histogram.
+    #[serde(
+        default = "default_bmc_latency_attributes",
+        deserialize_with = "deserialize_bmc_latency_attributes"
+    )]
+    pub bmc_latency_attributes: Vec<BmcLatencyAttribute>,
 }
 
 impl Default for RateLimitConfig {
@@ -1757,7 +1767,82 @@ impl Default for MetricsConfig {
         Self {
             endpoint: "0.0.0.0:9009".to_string(),
             prefix: "carbide_hardware_health".to_string(),
+            enable_bmc_latency_metrics: false,
+            bmc_latency_attributes: default_bmc_latency_attributes(),
         }
+    }
+}
+
+fn default_bmc_latency_attributes() -> Vec<BmcLatencyAttribute> {
+    BmcLatencyAttribute::ATTRIBUTES.to_vec()
+}
+
+fn deserialize_bmc_latency_attributes<'de, D>(
+    deserializer: D,
+) -> Result<Vec<BmcLatencyAttribute>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let labels = Vec::<String>::deserialize(deserializer)?;
+    let mut has_all = false;
+    let mut unknown = Vec::new();
+
+    for label in &labels {
+        if label == "all" {
+            has_all = true;
+        } else if BmcLatencyAttribute::from_label_name(label).is_none() {
+            unknown.push(label.as_str());
+        }
+    }
+
+    if !unknown.is_empty() {
+        return Err(serde::de::Error::custom(format!(
+            "unknown BMC latency attribute(s): {}; allowed values are: {}",
+            unknown.join(", "),
+            bmc_latency_attribute_allowed_values().join(", ")
+        )));
+    }
+
+    if has_all {
+        return Ok(default_bmc_latency_attributes());
+    }
+
+    let requested = labels.iter().map(String::as_str).collect::<HashSet<_>>();
+    Ok(BmcLatencyAttribute::ATTRIBUTES
+        .iter()
+        .copied()
+        .filter(|attribute| requested.contains(attribute.label_name()))
+        .collect())
+}
+
+fn bmc_latency_attribute_allowed_values() -> Vec<&'static str> {
+    let mut values = vec!["all"];
+    values.extend(
+        BmcLatencyAttribute::ATTRIBUTES
+            .iter()
+            .map(|attribute| attribute.label_name()),
+    );
+    values
+}
+
+impl MetricsConfig {
+    pub fn bmc_latency_attributes(&self) -> Vec<BmcLatencyAttribute> {
+        BmcLatencyAttribute::ATTRIBUTES
+            .iter()
+            .copied()
+            .filter(|attribute| self.bmc_latency_attributes.contains(attribute))
+            .collect()
+    }
+
+    fn validate(&self) -> Result<(), String> {
+        if self.enable_bmc_latency_metrics && self.bmc_latency_attributes().is_empty() {
+            return Err(
+                "metrics.bmc_latency_attributes must not be empty when metrics.enable_bmc_latency_metrics is true"
+                    .to_string(),
+            );
+        }
+
+        Ok(())
     }
 }
 
@@ -1800,6 +1885,8 @@ impl Config {
         if self.endpoint_discovery_interval.is_zero() {
             return Err("endpoint_discovery_interval must be greater than 0".to_string());
         }
+
+        self.metrics.validate()?;
 
         if let Configurable::Enabled(rate_limit) = &self.rate_limit
             && rate_limit.bucket_replenish.is_zero()
@@ -2503,6 +2590,15 @@ username = "root"
                         targets: vec![otlp_target("http://localhost:4317")],
                     });
                 }) => Yields(()),
+
+                config_with(|config| {
+                    config.metrics.enable_bmc_latency_metrics = true;
+                    config.metrics.bmc_latency_attributes = vec![
+                        BmcLatencyAttribute::HttpResponseStatusCode,
+                        BmcLatencyAttribute::ServerAddress,
+                        BmcLatencyAttribute::UrlScheme,
+                    ];
+                }) => Yields(()),
             }
 
             "top-level settings" {
@@ -2515,6 +2611,13 @@ username = "root"
                     config.endpoint_discovery_interval = Duration::ZERO;
                 }) => FailsWith(
                     "endpoint_discovery_interval must be greater than 0".to_string()
+                ),
+
+                config_with(|config| {
+                    config.metrics.enable_bmc_latency_metrics = true;
+                    config.metrics.bmc_latency_attributes = vec![];
+                }) => FailsWith(
+                    "metrics.bmc_latency_attributes must not be empty when metrics.enable_bmc_latency_metrics is true".to_string()
                 ),
 
                 config_with(|config| {
@@ -3163,6 +3266,15 @@ reload_interval = "30s"
         assert_eq!(config.shards_count, 1);
         assert_eq!(config.cache_size, 100);
         assert_eq!(config.metrics.endpoint, "0.0.0.0:9009");
+        assert!(!config.metrics.enable_bmc_latency_metrics);
+        assert_eq!(
+            config.metrics.bmc_latency_attributes,
+            BmcLatencyAttribute::ATTRIBUTES.to_vec()
+        );
+        assert_eq!(
+            config.metrics.bmc_latency_attributes(),
+            BmcLatencyAttribute::ATTRIBUTES.to_vec()
+        );
         assert!(config.rate_limit.is_enabled());
         assert!(config.processors.leak_detection.is_enabled());
         assert!(config.collectors.leak_detector.is_enabled());
@@ -3173,6 +3285,54 @@ reload_interval = "30s"
         } else {
             panic!("health report sink should be enabled by default");
         }
+    }
+
+    #[test]
+    fn bmc_latency_metrics_config_parsing() {
+        let toml_content = r#"
+[metrics]
+enable_bmc_latency_metrics = true
+bmc_latency_attributes = ["http_response_status_code", "server_address", "url_scheme", "entity_type", "machine_id", "rack_id"]
+"#;
+
+        let config: Config = Figment::new()
+            .merge(Serialized::defaults(Config::default()))
+            .merge(Toml::string(toml_content))
+            .extract()
+            .expect("could not parse config toml file");
+
+        assert!(config.metrics.enable_bmc_latency_metrics);
+        assert_eq!(
+            config.metrics.bmc_latency_attributes(),
+            vec![
+                BmcLatencyAttribute::HttpResponseStatusCode,
+                BmcLatencyAttribute::ServerAddress,
+                BmcLatencyAttribute::UrlScheme,
+                BmcLatencyAttribute::EntityType,
+                BmcLatencyAttribute::MachineId,
+                BmcLatencyAttribute::RackId,
+            ]
+        );
+
+        let toml_content = r#"
+[metrics]
+bmc_latency_attributes = ["http_path", "all"]
+"#;
+
+        let config: Config = Figment::new()
+            .merge(Serialized::defaults(Config::default()))
+            .merge(Toml::string(toml_content))
+            .extract()
+            .expect("could not parse config toml file");
+
+        assert_eq!(
+            config.metrics.bmc_latency_attributes,
+            BmcLatencyAttribute::ATTRIBUTES.to_vec()
+        );
+        assert_eq!(
+            config.metrics.bmc_latency_attributes(),
+            BmcLatencyAttribute::ATTRIBUTES.to_vec()
+        );
     }
 
     #[test]
