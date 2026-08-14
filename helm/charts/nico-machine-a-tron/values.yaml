@@ -137,6 +137,14 @@ serviceMonitor:
   interval: 30s
   scrapeTimeout: 25s
 
+## UFM-compatible API mock hosted by each machine-a-tron process on its existing
+## HTTPS listener. Disable it for simulations that do not need InfiniBand.
+ufmMock:
+  enabled: true
+  ## Use an existing Secret with a `token` key. When unset, the chart creates
+  ## a Secret with a random token and preserves it across Helm upgrades.
+  existingAuthSecret: ""
+
 ## =============================================================================
 ## Machine-a-tron Core Settings (shared across all pods)
 ## =============================================================================
