@@ -21,7 +21,9 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use bmc_mock::mac_address_pool::MacAddressPool;
-use bmc_mock::{DpuMachineInfo, DpuSettings, HardwareType, RackInfo, RackType};
+use bmc_mock::{
+    DpuMachineInfo, DpuSettings, HardwareType, HostFirmwareVersions, RackInfo, RackType,
+};
 use carbide_uuid::machine::MachineId;
 use carbide_uuid::rack::{RackId, RackProfileId};
 use clap::Parser;
@@ -127,6 +129,14 @@ pub struct MachineConfig {
     #[serde(default)]
     pub dpu_firmware_versions: Option<DpuFirmwareVersions>,
 
+    /// Initial host BMC / UEFI firmware versions to report in FirmwareInventory.
+    /// carbide will detect that these are older than the desired versions and
+    /// trigger an upgrade.  After the simulated power-cycle bmc-mock applies
+    /// the staged (desired) versions so site-explorer observes the upgrade.
+    /// When omitted, the hardware-type default versions are used.
+    #[serde(default)]
+    pub host_firmware_versions: Option<HostFirmwareVersions>,
+
     #[serde(default)]
     pub dpu_agent_version: Option<String>,
 }
@@ -206,6 +216,7 @@ impl WiwynnGb200RackConfig {
             network_virtualization_type: self.network_virtualization_type.clone(),
             dpus_in_nic_mode: self.dpus_in_nic_mode,
             dpu_firmware_versions: self.dpu_firmware_versions.clone(),
+            host_firmware_versions: None,
             dpu_agent_version: self.dpu_agent_version.clone(),
         }
     }
@@ -279,6 +290,7 @@ impl LenovoGb300RackConfig {
             network_virtualization_type: self.network_virtualization_type.clone(),
             dpus_in_nic_mode: self.dpus_in_nic_mode,
             dpu_firmware_versions: self.dpu_firmware_versions.clone(),
+            host_firmware_versions: None,
             dpu_agent_version: self.dpu_agent_version.clone(),
         }
     }
@@ -738,6 +750,11 @@ pub struct PersistedDevice {
     pub tpm_ek_certificate: Option<Vec<u8>>,
     #[serde(default)]
     pub hw_mac_addr_pool: Option<MacAddressPoolConfig>,
+    /// Active host firmware inventory at the time this snapshot was taken.
+    /// Restored as `initial_host_firmware` on restart so the mock starts with
+    /// the versions last observed, not the operator-configured starting point.
+    #[serde(default)]
+    pub active_host_firmware: Option<HostFirmwareVersions>,
 }
 
 impl PersistedDevice {
