@@ -478,7 +478,7 @@ pub(in crate::tests) async fn delete_instance(
 
     env.run_machine_state_controller_iteration_until_state_matches(
         &mh.host().id,
-        7,
+        8,
         ManagedHostState::Assigned {
             instance_state: model::machine::InstanceState::HostPlatformConfiguration {
                 platform_config_state:
