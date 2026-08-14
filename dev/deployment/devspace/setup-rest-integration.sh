@@ -9,17 +9,20 @@ REPO_ROOT="$(cd -- "${SCRIPT_DIR}/../../.." && pwd)"
 
 CORE_NAMESPACE="${LOCAL_DEV_NAMESPACE:-nico-system}"
 REST_NAMESPACE="nico-rest"
+DSX_GATEWAY_ENABLED="${LOCAL_DEV_DSX_GATEWAY_ENABLED:-0}"
 CORE_SITE_CONFIG_MAP="nico-api-site-config-files"
 MACHINE_A_TRON_DEPLOYMENT="nico-machine-a-tron-mat-0"
 MACHINE_A_TRON_BMC_SERVICE="${MACHINE_A_TRON_DEPLOYMENT}-bmc-mock"
 API_FORWARD_PORT="${LOCAL_DEV_REST_API_FORWARD_PORT:-18388}"
 KEYCLOAK_FORWARD_PORT="${LOCAL_DEV_KEYCLOAK_FORWARD_PORT:-18082}"
+DSX_GATEWAY_FORWARD_PORT="${LOCAL_DEV_DSX_GATEWAY_FORWARD_PORT:-18080}"
 WORK_DIR="${LOCAL_DEV_REST_WORK_DIR:-${HOME}/Developer/_agent-tmp/devspace-rest}"
 verify_attempts=180
 verify_sleep_seconds=5
 
 api_forward_pid=""
 keycloak_forward_pid=""
+dsx_gateway_forward_pid=""
 
 cleanup() {
   if [[ -n "${api_forward_pid}" ]]; then
@@ -27,6 +30,9 @@ cleanup() {
   fi
   if [[ -n "${keycloak_forward_pid}" ]]; then
     kill "${keycloak_forward_pid}" >/dev/null 2>&1 || true
+  fi
+  if [[ -n "${dsx_gateway_forward_pid}" ]]; then
+    kill "${dsx_gateway_forward_pid}" >/dev/null 2>&1 || true
   fi
 }
 
@@ -147,7 +153,11 @@ kubectl rollout status deployment/nico-rest-cert-manager -n "${REST_NAMESPACE}" 
 kubectl rollout status deployment/nico-rest-cloud-worker -n "${REST_NAMESPACE}" --timeout=300s >/dev/null
 kubectl rollout status deployment/nico-rest-site-worker -n "${REST_NAMESPACE}" --timeout=300s >/dev/null
 kubectl rollout status deployment/nico-rest-site-manager -n "${REST_NAMESPACE}" --timeout=300s >/dev/null
-kubectl rollout status deployment/nico-mcp -n "${REST_NAMESPACE}" --timeout=300s >/dev/null
+if [[ "${DSX_GATEWAY_ENABLED}" == "1" ]]; then
+  kubectl rollout status deployment/nico-mcp -n "${REST_NAMESPACE}" --timeout=300s >/dev/null
+  kubectl wait --for=condition=Programmed gateway/dsx-gateway-csc \
+    -n dsx-gateway-csc --timeout=300s >/dev/null
+fi
 kubectl wait --for=condition=Ready certificate/core-grpc-client-site-agent-certs \
   -n "${REST_NAMESPACE}" --timeout=240s >/dev/null
 
@@ -160,6 +170,13 @@ kubectl port-forward --address 127.0.0.1 -n "${REST_NAMESPACE}" \
   service/keycloak "${KEYCLOAK_FORWARD_PORT}:8082" \
   >"${WORK_DIR}/keycloak-port-forward.log" 2>&1 &
 keycloak_forward_pid=$!
+
+if [[ "${DSX_GATEWAY_ENABLED}" == "1" ]]; then
+  kubectl port-forward --address 127.0.0.1 -n dsx-gateway-csc \
+    service/dsx-gateway-csc "${DSX_GATEWAY_FORWARD_PORT}:80" \
+    >"${WORK_DIR}/dsx-gateway-port-forward.log" 2>&1 &
+  dsx_gateway_forward_pid=$!
+fi
 
 curl --fail --silent --show-error --retry 120 --retry-connrefused --retry-delay 1 \
   --max-time 5 "http://localhost:${KEYCLOAK_FORWARD_PORT}/realms/nico-dev" >/dev/null
@@ -181,6 +198,16 @@ if ! kill -0 "${keycloak_forward_pid}" >/dev/null 2>&1 || \
     "${KEYCLOAK_FORWARD_PORT}" >&2
   sed -n '1,120p' "${WORK_DIR}/keycloak-port-forward.log" >&2
   exit 1
+fi
+if [[ "${DSX_GATEWAY_ENABLED}" == "1" ]]; then
+  dsx_gateway_forward_log="$(<"${WORK_DIR}/dsx-gateway-port-forward.log")"
+  if ! kill -0 "${dsx_gateway_forward_pid}" >/dev/null 2>&1 || \
+    [[ "${dsx_gateway_forward_log}" != *"Forwarding from 127.0.0.1:${DSX_GATEWAY_FORWARD_PORT}"* ]]; then
+    printf 'DSX Agent Gateway port-forward failed; port %s may already be in use\n' \
+      "${DSX_GATEWAY_FORWARD_PORT}" >&2
+    sed -n '1,120p' "${WORK_DIR}/dsx-gateway-port-forward.log" >&2
+    exit 1
+  fi
 fi
 
 setup_started_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
@@ -307,5 +334,52 @@ for ((attempt = 1; attempt <= verify_attempts; attempt++)); do
   fi
   sleep "${verify_sleep_seconds}"
 done
+
+if [[ "${DSX_GATEWAY_ENABLED}" == "1" ]]; then
+  mcp_headers=(
+    -H "Authorization: Bearer ${token}"
+    -H "Accept: application/json, text/event-stream"
+    -H "Content-Type: application/json"
+  )
+  curl --fail --silent --show-error --max-time 30 \
+    -D "${WORK_DIR}/dsx-gateway-initialize.headers" \
+    -o "${WORK_DIR}/dsx-gateway-initialize.body" \
+    "${mcp_headers[@]}" \
+    --data '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"nico-devspace","version":"1"}}}' \
+    "http://localhost:${DSX_GATEWAY_FORWARD_PORT}/mcp"
+
+  mcp_session_id="$(awk 'tolower($0) ~ /^mcp-session-id:/ {
+    sub(/^[^:]*:[[:space:]]*/, ""); sub(/\r$/, ""); print; exit
+  }' "${WORK_DIR}/dsx-gateway-initialize.headers")"
+  session_header=()
+  if [[ -n "${mcp_session_id}" ]]; then
+    session_header=(-H "Mcp-Session-Id: ${mcp_session_id}")
+  fi
+
+  curl --fail --silent --show-error --max-time 30 \
+    -o /dev/null \
+    "${mcp_headers[@]}" "${session_header[@]}" \
+    --data '{"jsonrpc":"2.0","method":"notifications/initialized"}' \
+    "http://localhost:${DSX_GATEWAY_FORWARD_PORT}/mcp"
+  curl --fail --silent --show-error --max-time 60 \
+    -o "${WORK_DIR}/dsx-gateway-tools-list.body" \
+    "${mcp_headers[@]}" "${session_header[@]}" \
+    --data '{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}' \
+    "http://localhost:${DSX_GATEWAY_FORWARD_PORT}/mcp"
+
+  tools_list_json="$(jq -c . "${WORK_DIR}/dsx-gateway-tools-list.body" 2>/dev/null || \
+    sed -n 's/^data: //p' "${WORK_DIR}/dsx-gateway-tools-list.body" | head -1)"
+  if ! jq -e '
+    .result.tools as $tools |
+    ($tools | type == "array" and length > 0) and
+    all($tools[]; (.name | type == "string" and startswith("nico_")) and
+      .inputSchema.properties.shard_id == null)
+  ' <<<"${tools_list_json}" >/dev/null; then
+    printf 'DSX Agent Gateway did not return direct NICo MCP tools without shard routing\n' >&2
+    printf '%s\n' "${tools_list_json}" >&2
+    exit 1
+  fi
+  printf 'CSC Agent Gateway authenticated and listed direct NICo MCP tools without shard routing\n'
+fi
 
 printf 'REST integration setup complete\n'
