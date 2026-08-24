@@ -342,20 +342,20 @@ impl MachineCapabilitiesSet {
         //  Process memory data
         //
 
-        let mut mem_map = HashMap::<String, usize>::new();
+        let mut mem_map = HashMap::<String, u64>::new();
 
         for mem_info in hardware_info.memory_devices.iter() {
             let name = mem_info
                 .mem_type
                 .clone()
                 .unwrap_or_else(|| "unknown".to_string());
+            let total =
+                (mem_info.size_mb.unwrap_or_default() as u64).saturating_mul(mem_info.count as u64);
 
             mem_map
                 .entry(name)
-                .and_modify(|e| {
-                    *e = e.saturating_add(mem_info.size_mb.unwrap_or_default() as usize)
-                })
-                .or_insert_with(|| mem_info.size_mb.unwrap_or_default() as usize);
+                .and_modify(|e| *e = e.saturating_add(total))
+                .or_insert(total);
         }
 
         //
@@ -889,6 +889,39 @@ mod tests {
 
             "all inactive without status" {
                 "inactive_len" => 2u32,
+            }
+        );
+    }
+
+    #[test]
+    fn memory_capacity_sums_without_u32_overflow() {
+        // `size_mb * count` is computed on 64-bit operands (regardless of the
+        // target's pointer width) so a group whose product exceeds u32::MAX is
+        // represented exactly rather than clamped.
+        let run = |(size_mb, count): (u32, u32)| {
+            let hardware_info = HardwareInfo {
+                memory_devices: vec![MemoryDeviceGroup {
+                    size_mb: Some(size_mb),
+                    mem_type: Some("DDR4".to_string()),
+                    count,
+                }],
+                ..Default::default()
+            };
+
+            let caps =
+                MachineCapabilitiesSet::from_hardware_info(&hardware_info, None, vec![], &[]);
+            assert_eq!(caps.memory.len(), 1);
+            caps.memory[0].capacity.clone()
+        };
+
+        value_scenarios!(
+            run = run;
+            "product fits in u32" {
+                (2048u32, 4u32) => Some("8192 MB".to_string()),
+            }
+
+            "product exceeds u32::MAX" {
+                (u32::MAX, 2u32) => Some(format!("{} MB", (u32::MAX as u64) * 2)),
             }
         );
     }
