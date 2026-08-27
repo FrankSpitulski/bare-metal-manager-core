@@ -22,33 +22,11 @@ use clap::Parser;
 #[command(after_long_help = "\
 EXAMPLES:
 
-Force delete a power shelf:
-    $ nico-admin-cli power-shelf force-delete 12345678-1234-5678-90ab-cdef01234567
-
-Force delete a power shelf and its machine interfaces:
-    $ nico-admin-cli power-shelf force-delete 12345678-1234-5678-90ab-cdef01234567 --delete-interfaces
-
-Force delete a power shelf with interface and BMC cleanup:
-    $ nico-admin-cli power-shelf force-delete 12345678-1234-5678-90ab-cdef01234567 \
-    --delete-interfaces --delete-bmc-suppressions
+Start decommissioning a ready managed power shelf:
+    $ nico-admin-cli power-shelf decommission ps100htjtiaehv1n5vh67tbmqq4eabcjdng40f7jupsadbedhruh6rag1l0
 
 ")]
 pub(crate) struct Args {
-    #[clap(help = "Power Shelf ID to force delete.")]
+    #[clap(help = "ID of the ready managed power shelf to decommission")]
     pub(super) power_shelf_id: PowerShelfId,
-
-    #[clap(
-        short = 'd',
-        long,
-        action,
-        help = "Delete machine interfaces associated with this power shelf."
-    )]
-    pub(super) delete_interfaces: bool,
-
-    #[clap(
-        long,
-        action,
-        help = "Delete BMC suppressions (site explorer and DHCP) for this power shelf BMC MAC."
-    )]
-    pub(super) delete_bmc_suppressions: bool,
 }

@@ -15,28 +15,22 @@
  * limitations under the License.
  */
 
-use rpc::forge::AdminForceDeletePowerShelfRequest;
+use rpc::forge::DecommissionPowerShelfRequest;
 
 use super::args::Args;
+use crate::errors::CarbideCliResult;
 use crate::rpc::ApiClient;
 
-pub(super) async fn force_delete(data: Args, api_client: &ApiClient) -> color_eyre::Result<()> {
-    let response = api_client
+pub(super) async fn decommission(api_client: &ApiClient, args: Args) -> CarbideCliResult<()> {
+    api_client
         .0
-        .admin_force_delete_power_shelf(AdminForceDeletePowerShelfRequest {
-            power_shelf_id: Some(data.power_shelf_id),
-            delete_interfaces: data.delete_interfaces,
-            delete_bmc_suppressions: data.delete_bmc_suppressions,
+        .decommission_power_shelf(DecommissionPowerShelfRequest {
+            power_shelf_id: Some(args.power_shelf_id),
         })
         .await?;
-
     println!(
-        "Power shelf {} force deleted successfully.",
-        response.power_shelf_id
+        "Started decommissioning managed power shelf {}.",
+        args.power_shelf_id
     );
-    if response.interfaces_deleted > 0 {
-        println!("{} interface(s) deleted.", response.interfaces_deleted);
-    }
-
     Ok(())
 }

@@ -71,6 +71,7 @@ const (
 	Forge_FindPowerShelves_FullMethodName                                   = "/forge.Forge/FindPowerShelves"
 	Forge_FindPowerShelfIds_FullMethodName                                  = "/forge.Forge/FindPowerShelfIds"
 	Forge_FindPowerShelvesByIds_FullMethodName                              = "/forge.Forge/FindPowerShelvesByIds"
+	Forge_DecommissionPowerShelf_FullMethodName                             = "/forge.Forge/DecommissionPowerShelf"
 	Forge_DeletePowerShelf_FullMethodName                                   = "/forge.Forge/DeletePowerShelf"
 	Forge_AdminForceDeletePowerShelf_FullMethodName                         = "/forge.Forge/AdminForceDeletePowerShelf"
 	Forge_SetPowerShelfMaintenance_FullMethodName                           = "/forge.Forge/SetPowerShelfMaintenance"
@@ -579,8 +580,11 @@ type ForgeClient interface {
 	FindPowerShelves(ctx context.Context, in *PowerShelfQuery, opts ...grpc.CallOption) (*PowerShelfList, error)
 	FindPowerShelfIds(ctx context.Context, in *PowerShelfSearchFilter, opts ...grpc.CallOption) (*PowerShelfIdList, error)
 	FindPowerShelvesByIds(ctx context.Context, in *PowerShelvesByIdsRequest, opts ...grpc.CallOption) (*PowerShelfList, error)
+	// Starts the decommissioning workflow for a Ready managed power shelf.
+	DecommissionPowerShelf(ctx context.Context, in *DecommissionPowerShelfRequest, opts ...grpc.CallOption) (*DecommissionPowerShelfResponse, error)
 	DeletePowerShelf(ctx context.Context, in *PowerShelfDeletionRequest, opts ...grpc.CallOption) (*PowerShelfDeletionResult, error)
-	// Force deletes a Power Shelf and optionally its associated interfaces from the database.
+	// Force deletes a Power Shelf and optionally its associated interfaces
+	// and BMC suppressions from the database.
 	AdminForceDeletePowerShelf(ctx context.Context, in *AdminForceDeletePowerShelfRequest, opts ...grpc.CallOption) (*AdminForceDeletePowerShelfResponse, error)
 	// Request a maintenance operation (PowerOn / PowerOff) for a Power Shelf.
 	// When the power shelf is in Ready state, the power shelf state controller
@@ -1864,6 +1868,16 @@ func (c *forgeClient) FindPowerShelvesByIds(ctx context.Context, in *PowerShelve
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(PowerShelfList)
 	err := c.cc.Invoke(ctx, Forge_FindPowerShelvesByIds_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *forgeClient) DecommissionPowerShelf(ctx context.Context, in *DecommissionPowerShelfRequest, opts ...grpc.CallOption) (*DecommissionPowerShelfResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(DecommissionPowerShelfResponse)
+	err := c.cc.Invoke(ctx, Forge_DecommissionPowerShelf_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -6297,8 +6311,11 @@ type ForgeServer interface {
 	FindPowerShelves(context.Context, *PowerShelfQuery) (*PowerShelfList, error)
 	FindPowerShelfIds(context.Context, *PowerShelfSearchFilter) (*PowerShelfIdList, error)
 	FindPowerShelvesByIds(context.Context, *PowerShelvesByIdsRequest) (*PowerShelfList, error)
+	// Starts the decommissioning workflow for a Ready managed power shelf.
+	DecommissionPowerShelf(context.Context, *DecommissionPowerShelfRequest) (*DecommissionPowerShelfResponse, error)
 	DeletePowerShelf(context.Context, *PowerShelfDeletionRequest) (*PowerShelfDeletionResult, error)
-	// Force deletes a Power Shelf and optionally its associated interfaces from the database.
+	// Force deletes a Power Shelf and optionally its associated interfaces
+	// and BMC suppressions from the database.
 	AdminForceDeletePowerShelf(context.Context, *AdminForceDeletePowerShelfRequest) (*AdminForceDeletePowerShelfResponse, error)
 	// Request a maintenance operation (PowerOn / PowerOff) for a Power Shelf.
 	// When the power shelf is in Ready state, the power shelf state controller
@@ -7246,6 +7263,9 @@ func (UnimplementedForgeServer) FindPowerShelfIds(context.Context, *PowerShelfSe
 }
 func (UnimplementedForgeServer) FindPowerShelvesByIds(context.Context, *PowerShelvesByIdsRequest) (*PowerShelfList, error) {
 	return nil, status.Error(codes.Unimplemented, "method FindPowerShelvesByIds not implemented")
+}
+func (UnimplementedForgeServer) DecommissionPowerShelf(context.Context, *DecommissionPowerShelfRequest) (*DecommissionPowerShelfResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method DecommissionPowerShelf not implemented")
 }
 func (UnimplementedForgeServer) DeletePowerShelf(context.Context, *PowerShelfDeletionRequest) (*PowerShelfDeletionResult, error) {
 	return nil, status.Error(codes.Unimplemented, "method DeletePowerShelf not implemented")
@@ -9432,6 +9452,24 @@ func _Forge_FindPowerShelvesByIds_Handler(srv interface{}, ctx context.Context, 
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(ForgeServer).FindPowerShelvesByIds(ctx, req.(*PowerShelvesByIdsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _Forge_DecommissionPowerShelf_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(DecommissionPowerShelfRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ForgeServer).DecommissionPowerShelf(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Forge_DecommissionPowerShelf_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ForgeServer).DecommissionPowerShelf(ctx, req.(*DecommissionPowerShelfRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -17453,6 +17491,10 @@ var Forge_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "FindPowerShelvesByIds",
 			Handler:    _Forge_FindPowerShelvesByIds_Handler,
+		},
+		{
+			MethodName: "DecommissionPowerShelf",
+			Handler:    _Forge_DecommissionPowerShelf_Handler,
 		},
 		{
 			MethodName: "DeletePowerShelf",
