@@ -644,10 +644,10 @@ pub struct CarbideConfig {
     #[serde(default)]
     pub oem_manager_profiles: libredfish::BiosProfileVendor,
 
-    /// DpaConfig refers to East West Ethernet (aka
+    /// EwEthersConfig refers to East West Ethernet (aka
     /// Cluster Interconnect Network) configuration
     #[serde(default)]
-    pub dpa_config: Option<DpaConfig>,
+    pub ewethers_config: Option<EwEthersConfig>,
 
     /// DSX Exchange Event Bus configuration. Publishes
     /// `ManagedHostState` transitions, BMS rack leak/isolation
@@ -1173,7 +1173,8 @@ impl CarbideConfig {
             bios_profiles: self.bios_profiles.clone(),
             oem_manager_profiles: self.oem_manager_profiles.clone(),
 
-            dpa_enabled: self.is_dpa_enabled(),
+            ewethers_enabled: self.is_ewethers_enabled(),
+            astra_enabled: self.is_astra_enabled(),
             dpf_enabled: self.dpf.enabled,
             dpu_service_sync_enabled: self.dpf.dpu_service_sync_enabled,
             spdm_enabled: self.spdm.enabled,
@@ -3079,16 +3080,32 @@ impl CarbideConfig {
         }
     }
 
-    pub fn is_dpa_enabled(&self) -> bool {
-        let Some(conf) = &self.dpa_config else {
+    pub fn is_ewethers_enabled(&self) -> bool {
+        let Some(conf) = &self.ewethers_config else {
             return false;
         };
 
         conf.enabled
     }
 
+    pub fn is_svpc_enabled(&self) -> bool {
+        let Some(conf) = &self.ewethers_config else {
+            return false;
+        };
+
+        conf.svpc_enabled
+    }
+
+    pub fn is_astra_enabled(&self) -> bool {
+        let Some(conf) = &self.ewethers_config else {
+            return false;
+        };
+
+        conf.astra_enabled
+    }
+
     pub fn get_dpa_subnet_ip(&self) -> Result<Ipv4Addr, eyre::Report> {
-        let Some(conf) = &self.dpa_config else {
+        let Some(conf) = &self.ewethers_config else {
             tracing::error!("get_dpa_subnet_ip: DPA config missing");
             return Err(eyre::eyre!("get_dpa_subnet_ip: DPA config missing"));
         };
@@ -3097,7 +3114,7 @@ impl CarbideConfig {
     }
 
     pub fn get_dpa_subnet_mask(&self) -> Result<i32, eyre::Report> {
-        let Some(conf) = &self.dpa_config else {
+        let Some(conf) = &self.ewethers_config else {
             tracing::error!("get_dpa_subnet_mask: DPA config missing");
             return Err(eyre::eyre!("get_dpa_subnet_mask: DPA config missing"));
         };
@@ -3106,17 +3123,21 @@ impl CarbideConfig {
     }
 
     pub fn mqtt_broker_host(&self) -> Option<String> {
-        self.dpa_config
+        self.ewethers_config
             .as_ref()
-            .map(|conf| conf.mqtt_endpoint.clone())
+            .map(|conf| conf.svpc.mqtt_endpoint.clone())
     }
 
     pub fn mqtt_broker_port(&self) -> Option<u16> {
-        self.dpa_config.as_ref().map(|conf| conf.mqtt_broker_port)
+        self.ewethers_config
+            .as_ref()
+            .map(|conf| conf.svpc.mqtt_broker_port)
     }
 
     pub fn get_hb_interval(&self) -> Option<chrono::TimeDelta> {
-        self.dpa_config.as_ref().map(|conf| conf.hb_interval)
+        self.ewethers_config
+            .as_ref()
+            .map(|conf| conf.svpc.hb_interval)
     }
 
     /// Returns true if the DSX Exchange Event Bus is enabled.
@@ -4056,17 +4077,34 @@ impl From<CarbideConfig> for rpc::forge::RuntimeConfig {
                 .bom_validation
                 .allow_allocation_on_validation_failure,
             dpu_nic_firmware_update_versions: value.dpu_config.dpu_nic_firmware_update_versions,
-            dpa_enabled: value.dpa_config.clone().unwrap_or_default().enabled,
-            mqtt_endpoint: value.dpa_config.clone().unwrap_or_default().mqtt_endpoint,
-            mqtt_broker_port: value
-                .dpa_config
+            ewethers_enabled: value.ewethers_config.clone().unwrap_or_default().enabled,
+            svpc_enabled: value
+                .ewethers_config
                 .clone()
                 .unwrap_or_default()
+                .svpc_enabled,
+            astra_enabled: value
+                .ewethers_config
+                .clone()
+                .unwrap_or_default()
+                .astra_enabled,
+            mqtt_endpoint: value
+                .ewethers_config
+                .clone()
+                .unwrap_or_default()
+                .svpc
+                .mqtt_endpoint,
+            mqtt_broker_port: value
+                .ewethers_config
+                .clone()
+                .unwrap_or_default()
+                .svpc
                 .mqtt_broker_port as i32,
             mqtt_hb_interval: value
-                .dpa_config
+                .ewethers_config
                 .clone()
                 .unwrap_or_default()
+                .svpc
                 .hb_interval
                 .to_string(),
             bom_validation_auto_generate_missing_sku: value
@@ -4078,12 +4116,12 @@ impl From<CarbideConfig> for rpc::forge::RuntimeConfig {
                 .as_secs(),
             dpu_secure_boot_enabled: value.dpu_config.dpu_enable_secure_boot,
             dpa_subnet_ip: value
-                .dpa_config
+                .ewethers_config
                 .clone()
                 .unwrap_or_default()
                 .subnet_ip
                 .to_string(),
-            dpa_subnet_mask: value.dpa_config.unwrap_or_default().subnet_mask,
+            dpa_subnet_mask: value.ewethers_config.unwrap_or_default().subnet_mask,
             dpf_enabled: value.dpf.enabled,
             compile_time_helm_version: crate::dpf_services::COMPILE_TIME_HELM_VERSION.to_string(),
             compile_time_docker_version: crate::dpf_services::COMPILE_TIME_IMAGE_TAG.to_string(),
@@ -4102,7 +4140,7 @@ fn default_mqtt_broker_port() -> u16 {
     1884
 }
 
-pub use carbide_dpa_manager::config::{DpaConfig, MqttAuthConfig, MqttAuthMode};
+pub use carbide_dpa_manager::config::{EwEthersConfig, MqttAuthConfig, MqttAuthMode, SvpcConfig};
 use model::vpc::VpcDefinition;
 
 /// DSX Exchange Event Bus configuration for publishing state change events via MQTT 3.1.1.
@@ -6234,22 +6272,30 @@ enabled = true
     fn deserialize_dpa_config() {
         let toml = r#"
 enabled=true
+svpc_enabled=true
+
+[svpc]
 mqtt_endpoint = "mqtt.forge"
         "#;
 
-        let dpa_config: DpaConfig = Figment::new().merge(Toml::string(toml)).extract().unwrap();
+        let dpa_config: EwEthersConfig =
+            Figment::new().merge(Toml::string(toml)).extract().unwrap();
 
         assert_eq!(
             dpa_config,
-            DpaConfig {
+            EwEthersConfig {
                 enabled: true,
-                mqtt_endpoint: "mqtt.forge".to_string(),
-                mqtt_broker_port: 1884,
-                hb_interval: chrono::TimeDelta::minutes(2),
+                svpc_enabled: true,
+                astra_enabled: false,
                 monitor_run_interval: std::time::Duration::from_secs(60),
                 subnet_ip: Ipv4Addr::UNSPECIFIED,
                 subnet_mask: 0_i32,
-                auth: MqttAuthConfig::default(),
+                svpc: SvpcConfig {
+                    mqtt_endpoint: "mqtt.forge".to_string(),
+                    mqtt_broker_port: 1884,
+                    hb_interval: chrono::TimeDelta::minutes(2),
+                    auth: MqttAuthConfig::default(),
+                },
             }
         );
     }
