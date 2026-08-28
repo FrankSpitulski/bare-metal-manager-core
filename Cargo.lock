@@ -1335,6 +1335,7 @@ dependencies = [
  "carbide-api-test-helper",
  "carbide-kms-provider",
  "carbide-machine-a-tron",
+ "carbide-rpc",
  "carbide-secrets",
  "carbide-utils",
  "carbide-uuid",
