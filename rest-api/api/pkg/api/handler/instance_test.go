@@ -10575,6 +10575,7 @@ func TestNewCreateInstanceHandler(t *testing.T) {
 				dbSession:  dbSession,
 				tc:         tc,
 				cfg:        cfg,
+				dps:        nil,
 				scp:        scp,
 				tracerSpan: sutil.NewTracerSpan(),
 			},
@@ -10582,9 +10583,8 @@ func TestNewCreateInstanceHandler(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := NewCreateInstanceHandler(tt.args.dbSession, tt.args.tc, tt.args.scp, tt.args.cfg); !reflect.DeepEqual(got, tt.want) {
-				t.Errorf("NewCreateInstanceHandler() = %+v, want %+v", got, tt.want)
-			}
+			got := NewCreateInstanceHandler(tt.args.dbSession, tt.args.tc, tt.args.scp, tt.args.cfg, nil)
+			assert.Equal(t, tt.want, got)
 		})
 	}
 }
@@ -10625,15 +10625,15 @@ func TestNewUpdateInstanceHandler(t *testing.T) {
 				tc:         tc,
 				scp:        scp,
 				cfg:        cfg,
+				dps:        nil,
 				tracerSpan: sutil.NewTracerSpan(),
 			},
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := NewUpdateInstanceHandler(tt.args.dbSession, tt.args.tc, tt.args.scp, tt.args.cfg); !reflect.DeepEqual(got, tt.want) {
-				t.Errorf("NewUpdateInstanceHandler() = %v, want %v", got, tt.want)
-			}
+			got := NewUpdateInstanceHandler(tt.args.dbSession, tt.args.tc, tt.args.scp, tt.args.cfg, nil)
+			assert.Equal(t, tt.want, got)
 		})
 	}
 }
@@ -10764,9 +10764,8 @@ func TestNewDeleteInstanceHandler(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := NewDeleteInstanceHandler(tt.args.dbSession, tt.args.tc, tt.args.scp, tt.args.cfg); !reflect.DeepEqual(got, tt.want) {
-				t.Errorf("NewDeleteInstanceHandler() = %v, want %v", got, tt.want)
-			}
+			got := NewDeleteInstanceHandler(tt.args.dbSession, tt.args.tc, tt.args.scp, tt.args.cfg, nil)
+			assert.Equal(t, tt.want, got)
 		})
 	}
 }
