@@ -1084,6 +1084,10 @@ pub struct DedicatedVaultSettings {
     /// root / `VAULT_CACERT`.
     #[serde(default)]
     pub vault_cacert: Option<String>,
+    /// Optional Vault Enterprise or HCP Vault Dedicated namespace for this
+    /// dedicated certificate client. Takes precedence over `VAULT_NAMESPACE`.
+    #[serde(default)]
+    pub namespace: Option<String>,
 }
 
 // Hand-rolled so the root `token` is never printed verbatim in logs or errors;
@@ -1098,6 +1102,7 @@ impl std::fmt::Debug for DedicatedVaultSettings {
             .field("pki_role_name", &self.pki_role_name)
             .field("token", &self.token.as_ref().map(|_| "<redacted>"))
             .field("vault_cacert", &self.vault_cacert)
+            .field("namespace", &self.namespace)
             .finish()
     }
 }
@@ -1122,6 +1127,7 @@ impl CertificatesConfig {
                         pki_role_name: dedicated.pki_role_name.clone(),
                         token: dedicated.token.clone(),
                         vault_cacert: dedicated.vault_cacert.clone(),
+                        namespace: dedicated.namespace.clone(),
                     },
                 )
             }
@@ -4959,6 +4965,7 @@ mod tests {
                 pki_role_name: &'static str,
                 token: Option<&'static str>,
                 vault_cacert: Option<&'static str>,
+                namespace: Option<&'static str>,
             },
         }
 
@@ -4986,6 +4993,7 @@ mod tests {
                     pki_role_name = "machine"
                     token = "s.abc123"
                     vault_cacert = "/etc/ssl/certs/vault-ca.pem"
+                    namespace = "admin/certificates"
                 "#,
                 Expect::Dedicated {
                     address: "https://vault-certs.example:8200",
@@ -4993,6 +5001,7 @@ mod tests {
                     pki_role_name: "machine",
                     token: Some("s.abc123"),
                     vault_cacert: Some("/etc/ssl/certs/vault-ca.pem"),
+                    namespace: Some("admin/certificates"),
                 },
             ),
             (
@@ -5054,6 +5063,7 @@ mod tests {
                     pki_role_name,
                     token,
                     vault_cacert,
+                    namespace,
                 } => {
                     let cfg = parsed
                         .unwrap_or_else(|e| panic!("{name}: expected parse to succeed, got {e}"));
@@ -5071,6 +5081,7 @@ mod tests {
                                 *vault_cacert,
                                 "{name}: vault_cacert"
                             );
+                            assert_eq!(d.namespace.as_deref(), *namespace, "{name}: namespace");
                         }
                         other => panic!("{name}: expected dedicated vault backend, got {other:?}"),
                     }
@@ -5461,6 +5472,7 @@ mod tests {
             pki_role_name: "leaf".to_string(),
             token: Some("s.super-secret-root-token".to_string()),
             vault_cacert: None,
+            namespace: None,
         });
         let redacted = config.redacted();
         assert_eq!(
