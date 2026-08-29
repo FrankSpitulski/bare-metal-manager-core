@@ -23,6 +23,7 @@ mod dhcp_lease_expiration;
 mod dns_resolution;
 mod dpu_agent_upgrade;
 mod dpu_machine_inventory;
+mod dynamic_config;
 mod expected_power_shelf;
 mod expected_power_shelf_crud;
 mod expected_power_shelf_static_address;
