@@ -456,8 +456,8 @@ pub struct CarbideConfig {
     /// version a card is actually locked under regardless of this flag, so
     /// flipping it off never bricks an already-migrated card. This is the fleet
     /// kill-switch for rolling the feature out site-by-site.
-    #[serde(default)]
-    pub lockdown_ikm_rotation_enabled: bool,
+    #[serde(default, alias = "lockdown_ikm_rotation_enabled")]
+    pub nic_lockdown_ikm_rotation_enabled: bool,
 
     /// Site-wide enable for factory-resetting the host BMC during tenant
     /// release. When `false` (the default), tenant release skips the BMC
@@ -1276,6 +1276,7 @@ impl CarbideConfig {
             spdm_enabled: self.spdm.enabled,
             bmc_rotation_enabled: self.bmc_rotation_enabled,
             uefi_rotation_enabled: self.uefi_rotation_enabled,
+            nic_lockdown_ikm_rotation_enabled: self.nic_lockdown_ikm_rotation_enabled,
             bmc_factory_reset_on_instance_termination_enabled: self
                 .bmc_factory_reset_on_instance_termination_enabled,
 
