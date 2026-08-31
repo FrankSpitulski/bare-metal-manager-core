@@ -202,6 +202,8 @@ use non-RMS backends.
 
 The examples below only show the component-manager and rack-profile fields.
 Configure `[rms]` separately when NICo needs to call RMS.
+The `nsm` and `psm` backend values require externally managed services; the
+NICo deployment charts do not install NSM or PSM.
 
 Example: GB200 rack where all component-manager roles use RMS:
 
