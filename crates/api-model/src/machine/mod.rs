@@ -1428,6 +1428,8 @@ pub enum DecommissioningState {
     SuppressingOobDhcp,
     /// Power-cycles the host to force OOB rediscovery against the pre-cycle suppression.
     PowerCyclingHost,
+    /// Powers the host back on after the cycle so OOB rediscovery can proceed.
+    PoweringOnHost,
     /// Waiting for the pre-cycle OOB DHCP suppression to be acknowledged.
     WaitingForOobDhcpAcknowledgement,
     /// BMC DHCP is suppressed before the BMC factory reset.
@@ -2752,6 +2754,7 @@ impl Display for DecommissioningState {
             DecommissioningState::DeconfiguringDpus { .. } => write!(f, "DeconfiguringDpus"),
             DecommissioningState::SuppressingOobDhcp => write!(f, "SuppressingOobDhcp"),
             DecommissioningState::PowerCyclingHost => write!(f, "PowerCyclingHost"),
+            DecommissioningState::PoweringOnHost => write!(f, "PoweringOnHost"),
             DecommissioningState::WaitingForOobDhcpAcknowledgement => {
                 write!(f, "WaitingForOobDhcpAcknowledgement")
             }
@@ -3150,6 +3153,9 @@ pub fn state_sla(
             }
             DecommissioningState::PowerCyclingHost => {
                 StateSla::with_sla(slas::DECOMMISSIONING_POWER_CYCLING_HOST, time_in_state)
+            }
+            DecommissioningState::PoweringOnHost => {
+                StateSla::with_sla(slas::DECOMMISSIONING_POWERING_ON_HOST, time_in_state)
             }
             DecommissioningState::WaitingForOobDhcpAcknowledgement => StateSla::with_sla(
                 slas::DECOMMISSIONING_WAITING_FOR_OOB_DHCP_ACKNOWLEDGEMENT,
