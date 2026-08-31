@@ -23,6 +23,7 @@ mod dhcp_lease_expiration;
 mod dns_resolution;
 mod dpa_interfaces;
 mod dpu_agent_upgrade;
+mod dpu_info_list;
 mod dpu_machine_inventory;
 mod dynamic_config;
 mod expected_power_shelf;
