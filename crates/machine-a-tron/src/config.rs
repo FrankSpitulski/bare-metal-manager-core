@@ -33,6 +33,7 @@ use clap::Parser;
 use duration_str::deserialize_duration;
 use eyre::Context;
 use mac_address::MacAddress;
+use nmxc_mock::NmxcMockConfig;
 use rms_mock::RmsMockConfig;
 use rpc::forge::DesiredFirmwareVersionEntry;
 use rpc::forge_tls_client::ForgeClientConfig;
@@ -605,6 +606,11 @@ pub struct MachineATronConfig {
     /// it is configured with an `rms.api_url` pointing here.
     #[serde(default)]
     pub rms_mock: RmsMockConfig,
+
+    /// The hosted NMX-C mock, always mounted like the RMS mock. NICo reaches
+    /// it at a simulated switch's NVOS address, so nothing here names it.
+    #[serde(default)]
+    pub nmxc_mock: NmxcMockConfig,
 }
 
 impl MachineATronConfig {
@@ -614,6 +620,8 @@ impl MachineATronConfig {
             .map(|host| HostPortPair::HostAndPort(host.clone(), self.bmc_mock_port).to_string())
     }
 
+    /// Checks the invariants serde cannot express, such as the UFM mock settings
+    /// and the UDP relay addresses.
     pub fn validate(&self) -> eyre::Result<()> {
         if let Some(ufm_mock) = self.ufm_mock.as_ref() {
             ufm_mock.validate()?;
@@ -690,6 +698,9 @@ impl MachineATronConfig {
         Ok(())
     }
 
+    /// Expands the configuration into concrete devices: the standalone machines plus
+    /// one machine per rack unit of every configured rack, with each rack's
+    /// registration. Fails on an invalid configuration.
     pub(crate) fn resolved_device_configs(&self) -> eyre::Result<ResolvedDeviceConfigs> {
         self.validate()?;
 
@@ -1231,6 +1242,7 @@ scout_run_interval = "5s"
         }
     }
 
+    /// A configuration with two WiWynn GB200 NVL72 racks and no standalone machines.
     fn gb200_rack_config() -> MachineATronConfig {
         let mut config = rack_config();
         let template = config.machines["config"].clone();
@@ -1248,6 +1260,7 @@ scout_run_interval = "5s"
         config
     }
 
+    /// A configuration with two Lenovo GB300 NVL72 racks and no standalone machines.
     fn gb300_rack_config() -> MachineATronConfig {
         let mut config = rack_config();
         let template = config.machines["config"].clone();
@@ -1279,6 +1292,7 @@ scout_run_interval = "5s"
         assert_eq!(round_tripped, cfg);
     }
 
+    /// Rack sections serialise with their `type` tag and parse back unchanged.
     #[test]
     fn rack_configs_round_trip() {
         check_cases(
@@ -1319,6 +1333,8 @@ scout_run_interval = "5s"
         );
     }
 
+    /// Each rack model expands to the member count, hardware types and profile
+    /// of its design.
     #[test]
     fn rack_models_expand_their_managed_hardware() {
         #[derive(Debug)]
@@ -2014,6 +2030,7 @@ server_address = "127.0.0.1:6767""#,
         assert_relay_name_compatibility(lenovo_gb300_rack_from_machine(&machine));
     }
 
+    /// Invalid rack sections are rejected with a message naming the bad reference.
     #[test]
     fn rack_references_are_validated() {
         let standalone = rack_config();

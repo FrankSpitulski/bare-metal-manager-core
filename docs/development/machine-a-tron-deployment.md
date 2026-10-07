@@ -492,7 +492,8 @@ SPIFFE URI). Controller Mode adds the following requirements:
    clusterIPs. All pods can share the same relay address. NICo assigns unique
    IPs from the network. Neither the chart nor the controller checks this, so
    run the preflight before every install. It resolves each
-   `bmcDhcpRelayAddress` to its `[networks.*]` prefix, reads the ServiceCIDR
+   `bmcDhcpRelayAddress`, and each `underlayDhcpRelayAddress` where set, to
+   its `[networks.*]` prefix, reads the ServiceCIDR
    from the cluster (or `SCALE_SERVICE_CIDRS`), and exits nonzero on an
    overlap:
 
@@ -510,13 +511,22 @@ SPIFFE URI). Controller Mode adds the following requirements:
    them: `allow_insecure_discovery = true`, `[networks.simulated-oob]`
    (`10.200.0.0/18`, gateway `10.200.0.1`, the `bmcDhcpRelayAddress` of the
    profiles), `[networks.simulated-admin]`, and `[networks.simulated-underlay]`
-   (`10.104.0.0/18`, gateway `10.104.0.1`, the `underlayDhcpRelayAddress`).
+   (`10.201.0.0/18`, gateway `10.201.0.1`, the `underlayDhcpRelayAddress`).
    The 3-pod 4,500-host profile needs one extra `[networks.mat-bmc-N]` stanza
    per pod, listed in its header. Declare networks before nico-api first
    starts. Refer to [Established Sites](#established-sites) otherwise.
 
 1. **Leave `site_explorer.bmc_proxy` unset.** The Redfish client dials each
    BMC IP directly.
+
+1. **The NVOS network has the same constraints as the BMC network.** The
+   controller publishes each simulated NVLink switch's NVOS lease (from the
+   `underlayDhcpRelayAddress` network, `[networks.simulated-underlay]` in the
+   profiles) as the `externalIPs` of a `mat-nvos-*` Service, through which
+   NICo reaches machine-a-tron's hosted NMX-C mock on port 9370. The preflight
+   checks that network alongside the BMC network. `nico-core-simulation.yaml`
+   ships the matching `[nvlink_config]`; refer to
+   [Machine-a-tron NMX-C Mock](machine-a-tron-nmxc-mock.md).
 
 1. **Keep the BMC passwords pinned.** The chart pins every mock BMC to the
    site root it reads from the site credentials Secret, so install the Secret
@@ -611,7 +621,7 @@ pods:
         rack_profile_id: GB200_NVL72R1_C2G4_WIWYNN
         ids: [rack-001, rack-002, rack-003]  # 25 ids per pod
         bmc_dhcp_relay_address: "10.200.0.1"
-        underlay_dhcp_relay_address: "10.104.0.1"
+        underlay_dhcp_relay_address: "10.201.0.1"
   mat-1:
     machines: {}
     racks:
@@ -620,7 +630,7 @@ pods:
         rack_profile_id: GB200_NVL72R1_C2G4_WIWYNN
         ids: [rack-026, rack-027, rack-028]
         bmc_dhcp_relay_address: "10.200.0.1"
-        underlay_dhcp_relay_address: "10.104.0.1"
+        underlay_dhcp_relay_address: "10.201.0.1"
   # mat-2 to mat-9 follow the same pattern
 ```
 
@@ -699,7 +709,7 @@ and pool in the Core values from the fleet:
 |---|---|---|
 | `[networks.simulated-oob]` (BMC DHCP) | hosts x (1 + DPUs per host). A GB200 NVL72 rack needs 71 (18 x 3 + 9 + 8) | `10.200.0.0/18`, 16,382 usable |
 | `[networks.simulated-admin]` (host PF at creation) | hosts x (DPUs per host + 1) | `10.102.0.0/18` |
-| `[networks.simulated-underlay]` (DPU OOB and switch NVOS DHCP) | hosts x DPUs per host + switches | `10.104.0.0/18` |
+| `[networks.simulated-underlay]` (DPU OOB and switch NVOS DHCP) | hosts x DPUs per host + switches | `10.201.0.0/18` |
 | `[pools.lo-ip]` | one per machine: hosts + DPUs | 16,382 addresses |
 | `[pools.fnn-asn]` | one per DPU | 18,000 |
 
