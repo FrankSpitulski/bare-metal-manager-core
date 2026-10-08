@@ -1,0 +1,33 @@
+suite: FMDS HTTP listeners used for metadata ACLs
+templates:
+  - daemonset.yaml
+tests:
+  - it: omits metadata listener flags when not supplied
+    asserts:
+      - notContains:
+          path: spec.template.spec.containers[0].args
+          content: --fmds-rest-address=0.0.0.0:80
+  - it: carries primary and compatibility addresses independently
+    set:
+      fmds.restAddress: "169.254.169.254:8080"
+      fmds.compatibilityRestAddress: "0.0.0.0:7777"
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --fmds-rest-address=169.254.169.254:8080
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --fmds-compatibility-rest-address=0.0.0.0:7777
+      - notContains:
+          path: spec.template.spec.containers[0].args
+          content: --fmds-rest-address=0.0.0.0:8888
+  - it: carries a primary listener without adding compatibility
+    set:
+      fmds.restAddress: "0.0.0.0:80"
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --fmds-rest-address=0.0.0.0:80
+      - notContains:
+          path: spec.template.spec.containers[0].args
+          content: --fmds-compatibility-rest-address=0.0.0.0:7777

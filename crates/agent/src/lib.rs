@@ -728,6 +728,7 @@ pub async fn start(cmdline: command_line::Options) -> eyre::Result<()> {
                     bgp_leaf_session_password: opts.bgp_leaf_session_password,
                     is_dpu_os: true,
                     fmds_gateway_vlan: None,
+                    fmds_http_listeners: vec![],
                 };
                 let contents = nvue::build(conf)?;
                 std::fs::write(&opts.path, contents)?;

@@ -14,7 +14,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::path::PathBuf;
 use std::str::FromStr;
 
@@ -331,6 +331,13 @@ pub struct RunOptions {
                 When set, the agent sends config updates via gRPC instead of running embedded FMDS."
     )]
     pub fmds_grpc_server: Option<String>,
+    /// Primary external FMDS HTTP listener used to derive tenant metadata ACL ports.
+    /// Omission leaves the external FMDS ACL exception disabled.
+    #[clap(long, requires = "fmds_grpc_server", value_parser = parse_fmds_listener)]
+    pub fmds_rest_address: Option<SocketAddr>,
+    /// Optional second external FMDS HTTP listener, serving the same metadata API.
+    #[clap(long, requires = "fmds_rest_address", value_parser = parse_fmds_listener)]
+    pub fmds_compatibility_rest_address: Option<SocketAddr>,
     #[clap(
         long,
         default_value = "3",
@@ -491,6 +498,16 @@ impl Options {
     pub fn load() -> Self {
         Self::parse()
     }
+}
+
+fn parse_fmds_listener(address: &str) -> Result<SocketAddr, String> {
+    let address = address
+        .parse::<SocketAddr>()
+        .map_err(|error| error.to_string())?;
+    if address.port() == 0 {
+        return Err("FMDS HTTP listener port must be nonzero".to_string());
+    }
+    Ok(address)
 }
 
 #[cfg(test)]
@@ -781,5 +798,48 @@ mod tests {
     fn test_sidecar_mode_subcommand_parses_without_args() {
         let opts = Options::try_parse_from(["forge-dpu-agent", "sidecar-mode"]).unwrap();
         assert!(matches!(opts.cmd, Some(AgentCommand::SidecarMode)));
+    }
+
+    #[test]
+    fn external_fmds_listener_options_are_optional_and_independent() {
+        let default = RunOptions::try_parse_from(["run"]).unwrap();
+        assert!(default.fmds_rest_address.is_none());
+        assert!(default.fmds_compatibility_rest_address.is_none());
+        let configured = RunOptions::try_parse_from([
+            "run",
+            "--fmds-grpc-server=http://fmds:50052",
+            "--fmds-rest-address=0.0.0.0:8080",
+            "--fmds-compatibility-rest-address=169.254.169.254:7777",
+        ])
+        .unwrap();
+        assert_eq!(configured.fmds_rest_address.unwrap().port(), 8080);
+        assert_eq!(
+            configured.fmds_compatibility_rest_address.unwrap().port(),
+            7777
+        );
+    }
+
+    #[test]
+    fn external_fmds_listener_options_reject_invalid_contracts() {
+        for args in [
+            vec!["run", "--fmds-rest-address=0.0.0.0:80"],
+            vec![
+                "run",
+                "--fmds-grpc-server=http://fmds:50052",
+                "--fmds-compatibility-rest-address=0.0.0.0:7777",
+            ],
+            vec![
+                "run",
+                "--fmds-grpc-server=http://fmds:50052",
+                "--fmds-rest-address=0.0.0.0:0",
+            ],
+            vec![
+                "run",
+                "--fmds-grpc-server=http://fmds:50052",
+                "--fmds-rest-address=8080",
+            ],
+        ] {
+            assert!(RunOptions::try_parse_from(args).is_err());
+        }
     }
 }

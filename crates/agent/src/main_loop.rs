@@ -1183,6 +1183,12 @@ impl MainLoop {
                             &self.service_addrs,
                             self.hbn_device_names.clone(),
                             supplemental_config.as_deref(),
+                            &self
+                                .options
+                                .fmds_rest_address
+                                .into_iter()
+                                .chain(self.options.fmds_compatibility_rest_address)
+                                .collect::<Vec<_>>(),
                         )
                         .await
                     };

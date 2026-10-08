@@ -886,18 +886,44 @@ pub(crate) fn mandatory_services(
     node_auth: &NodeAuthConfig,
     ewethers_config: Option<&EwEthersConfig>,
 ) -> Vec<ServiceDefinition> {
+    let fmds = fmds_service(
+        &resolved.base.fmds,
+        interfaces,
+        node_auth.fmds_use_node_tokens(),
+    );
+    let fmds_values = fmds.helm_values.as_ref().expect("FMDS has Helm values");
+    let mut agent = dpu_agent_service(&resolved.base.dpu_agent, bootstrap_ca);
+    let agent_values = agent
+        .helm_values
+        .as_mut()
+        .expect("DPU agent has Helm values");
+    // The agent must expose exactly the listeners deployed by this FMDS service.
+    let rest_address = match &fmds_values["restAddress"] {
+        serde_json::Value::Null => serde_json::json!(forge_dpu_fmds_shared::DEFAULT_REST_ADDRESS),
+        serde_json::Value::String(address) if address.is_empty() => {
+            serde_json::json!(forge_dpu_fmds_shared::DEFAULT_REST_ADDRESS)
+        }
+        address => address.clone(),
+    };
+    reassert_api_owned_value(
+        agent_values,
+        DPU_AGENT_SERVICE_NAME,
+        &["fmds", "restAddress"],
+        rest_address,
+    );
+    reassert_api_owned_value(
+        agent_values,
+        DPU_AGENT_SERVICE_NAME,
+        &["fmds", "compatibilityRestAddress"],
+        fmds_values["compatibilityRestAddress"].clone(),
+    );
+
     let mut service_vec = vec![
         dts_service(&resolved.base.dts),
         doca_hbn_service(&resolved.base.doca_hbn, interfaces, service_vpc_slots),
         dhcp_server_service(&resolved.base.dhcp_server, interfaces),
-        dpu_agent_service(&resolved.base.dpu_agent, bootstrap_ca),
-        // Not `node_auth.enabled` directly: an operator staging a disable
-        // moves fmds off tokens first, while the API still accepts them.
-        fmds_service(
-            &resolved.base.fmds,
-            interfaces,
-            node_auth.fmds_use_node_tokens(),
-        ),
+        agent,
+        fmds,
         otelcol_service(&resolved.base.otel),
     ];
 
@@ -933,6 +959,58 @@ mod tests {
     use super::*;
 
     const TEST_NS: &str = "dpf-operator-system";
+
+    #[test]
+    fn fmds_http_listeners_are_authoritative_for_agent_acl() {
+        for (overlay, expected_primary, expected_compatibility) in [
+            (
+                serde_json::json!({}),
+                serde_json::json!("0.0.0.0:80"),
+                serde_json::Value::Null,
+            ),
+            (
+                serde_json::json!({"restAddress": "169.254.169.254:8080", "compatibilityRestAddress": "0.0.0.0:7777"}),
+                serde_json::json!("169.254.169.254:8080"),
+                serde_json::json!("0.0.0.0:7777"),
+            ),
+            (
+                serde_json::json!({"restAddress": null, "compatibilityRestAddress": null}),
+                serde_json::json!("0.0.0.0:80"),
+                serde_json::Value::Null,
+            ),
+        ] {
+            let mut resolved = DpfResolvedMandatoryServicesConfig {
+                base: Default::default(),
+                extra: Default::default(),
+            };
+            resolved.base.fmds.extra_helm_values = overlay.as_object().cloned();
+            resolved.base.dpu_agent.extra_helm_values = serde_json::json!({
+                "fmds": {"restAddress": "0.0.0.0:8888", "compatibilityRestAddress": "0.0.0.0:50052"}
+            })
+            .as_object()
+            .cloned();
+            let services = mandatory_services(
+                &resolved,
+                &DpfDpuAgentBootstrapCa::default(),
+                &[],
+                ServiceVpcSlots::default(),
+                &NodeAuthConfig::default(),
+                None,
+            );
+            let values = services
+                .iter()
+                .find(|service| service.name == DPU_AGENT_SERVICE_NAME)
+                .unwrap()
+                .helm_values
+                .as_ref()
+                .unwrap();
+            assert_eq!(values["fmds"]["restAddress"], expected_primary);
+            assert_eq!(
+                values["fmds"]["compatibilityRestAddress"],
+                expected_compatibility
+            );
+        }
+    }
 
     /// HBN configuration follows the platform inventory used to build service chains.
     #[test]

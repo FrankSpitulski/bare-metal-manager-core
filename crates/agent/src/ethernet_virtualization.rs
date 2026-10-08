@@ -495,6 +495,7 @@ pub(super) async fn update_nvue(
     service_addrs: &ServiceAddresses,
     hbn_device_names: HBNDeviceNames,
     supplemental_config: Option<&str>,
+    fmds_http_listeners: &[std::net::SocketAddr],
 ) -> eyre::Result<bool> {
     let hbn_version = match update_flavor {
         NvueUpdateFlavor::StartupFile { .. } => hbn::read_version().await?,
@@ -755,6 +756,11 @@ pub(super) async fn update_nvue(
     let conf = nvue::NvueConfig {
         is_fnn: false,
         is_dpu_os,
+        fmds_http_listeners: if is_quarantined || is_dpu_os {
+            vec![]
+        } else {
+            fmds_http_listeners.to_vec()
+        },
         fmds_gateway_vlan: if !is_dpu_os {
             nc.tenant_interfaces
                 .iter()
@@ -2266,6 +2272,7 @@ mod tests {
                     &test_service_addresses(),
                     HBNDeviceNames::hbn_23(),
                     None,
+                    &[],
                 )
                 .await
             };
@@ -2422,6 +2429,7 @@ esac
             &test_service_addresses(),
             HBNDeviceNames::hbn_23(),
             None,
+            &[],
         )
         .await?;
         assert!(
@@ -2437,6 +2445,103 @@ esac
         let expected = include_str!("../templates/tests/nvue_startup.yaml.expected");
         compare_diffed(hbn_root.join(nvue::PATH), expected)?;
 
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn external_fmds_acl_follows_quarantine_via_rest() -> eyre::Result<()> {
+        use std::sync::{Arc, Mutex};
+
+        use axum::extract::Request;
+        use axum::http::{Method, StatusCode};
+        use axum::{Json, Router};
+        use nvue_client::client::NvueServerAddress;
+
+        let captured = Arc::new(Mutex::new(Vec::<serde_json::Value>::new()));
+        let requests = Arc::clone(&captured);
+        let router = Router::new().fallback(move |request: Request| {
+            let requests = Arc::clone(&requests);
+            async move {
+                let path = request.uri().path().to_string();
+                let response = match (request.method(), path.as_str()) {
+                    (&Method::GET, "/nvue_v1/system") => serde_json::json!({"build": "HBN 3.2.0"}),
+                    (&Method::POST, "/nvue_v1/revision") => serde_json::json!({"1": {}}),
+                    (&Method::PATCH, "/nvue_v1/") => {
+                        let body = axum::body::to_bytes(request.into_body(), 1024 * 1024)
+                            .await
+                            .unwrap();
+                        requests
+                            .lock()
+                            .unwrap()
+                            .push(serde_json::from_slice(&body).unwrap());
+                        serde_json::json!({})
+                    }
+                    (&Method::GET, "/nvue_v1/") => serde_json::json!({"changed": true}),
+                    (&Method::GET, "/nvue_v1/revision/1") => {
+                        serde_json::json!({"state": "applied"})
+                    }
+                    (&Method::DELETE, "/nvue_v1/") | (&Method::PATCH, "/nvue_v1/revision/1") => {
+                        serde_json::json!({})
+                    }
+                    _ => return (StatusCode::NOT_FOUND, Json(serde_json::json!({}))),
+                };
+                (StatusCode::OK, Json(response))
+            }
+        });
+        let td = tempfile::tempdir()?;
+        let socket_path = td.path().join("nvue.sock");
+        let listener = tokio::net::UnixListener::bind(&socket_path)?;
+        let (stop, stopped) = tokio::sync::oneshot::channel();
+        let server = tokio::spawn(async move {
+            axum::serve(listener, router)
+                .with_graceful_shutdown(async {
+                    let _ = stopped.await;
+                })
+                .await
+        });
+        let mut context = NvueClientContext::new(NvueClient::new(NvueServerAddress::UnixSocket {
+            socket_path,
+        })?);
+        let virtualization_type = VpcVirtualizationType::EthernetVirtualizer;
+        let mut config = netconf(virtualization_type, 32, 24, true, None, false, false);
+        let listeners = ["0.0.0.0:80".parse()?];
+        for quarantined in [false, true, false] {
+            config
+                .managed_host_config
+                .as_mut()
+                .unwrap()
+                .quarantine_state = quarantined.then(|| rpc::ManagedHostQuarantineState {
+                mode: rpc::ManagedHostQuarantineMode::BlockAllTraffic.into(),
+                reason: Some("test".into()),
+            });
+            assert!(
+                update_nvue(
+                    virtualization_type,
+                    NvueUpdateFlavor::RestApi {
+                        nvue_context: &mut context
+                    },
+                    &config,
+                    &test_service_addresses(),
+                    HBNDeviceNames::hbn_23(),
+                    None,
+                    &listeners,
+                )
+                .await?
+            );
+        }
+        {
+            let configs = captured.lock().unwrap();
+            assert_eq!(configs.len(), 3);
+            for (config, allowed) in configs.iter().zip([true, false, true]) {
+                assert_eq!(config["acl"]["p0003_fmds_http"].is_object(), allowed);
+                assert_eq!(
+                    config["interface"]["pf0hpf_if"]["acl"]["p0003_fmds_http"].is_object(),
+                    allowed
+                );
+            }
+        }
+        stop.send(()).unwrap();
+        server.await??;
         Ok(())
     }
 
@@ -2474,6 +2579,7 @@ esac
             &test_service_addresses(),
             HBNDeviceNames::hbn_23(),
             None,
+            &[],
         )
         .await?;
         assert!(
@@ -2526,6 +2632,7 @@ esac
             &test_service_addresses(),
             HBNDeviceNames::hbn_23(),
             None,
+            &[],
         )
         .await?;
         assert!(
@@ -2587,6 +2694,7 @@ esac
             &test_service_addresses(),
             HBNDeviceNames::hbn_23(),
             None,
+            &[],
         )
         .await?;
         assert!(
@@ -2645,6 +2753,7 @@ esac
             &test_service_addresses(),
             HBNDeviceNames::hbn_23(),
             None,
+            &[],
         )
         .await?;
         let output = fs::read_to_string(hbn_root.join(nvue::PATH))?;
@@ -2719,6 +2828,7 @@ esac
             &test_service_addresses(),
             HBNDeviceNames::hbn_23(),
             None,
+            &[],
         )
         .await?;
 
@@ -2771,6 +2881,7 @@ esac
                 &test_service_addresses(),
                 HBNDeviceNames::hbn_23(),
                 None,
+                &[],
             )
             .await?
         );
@@ -2908,6 +3019,7 @@ esac
                 &replacement_services,
                 HBNDeviceNames::hbn_23(),
                 None,
+                &[],
             )
             .await?
         );
@@ -2988,6 +3100,7 @@ esac
                 &ipv4_only_services,
                 HBNDeviceNames::hbn_23(),
                 None,
+                &[],
             )
             .await?
         );
@@ -3030,6 +3143,7 @@ esac
                 &ipv4_only_services,
                 HBNDeviceNames::hbn_23(),
                 None,
+                &[],
             )
             .await?
         );
@@ -3099,6 +3213,7 @@ esac
                 &test_service_addresses(),
                 HBNDeviceNames::hbn_23(),
                 None,
+                &[],
             )
             .await
             .unwrap_err()
@@ -3140,6 +3255,7 @@ esac
             &test_service_addresses(),
             HBNDeviceNames::hbn_23(),
             None,
+            &[],
         )
         .await?;
         assert!(
@@ -3196,6 +3312,7 @@ esac
             &test_service_addresses(),
             HBNDeviceNames::hbn_23(),
             None,
+            &[],
         )
         .await?;
         assert!(
@@ -3255,6 +3372,7 @@ esac
             &test_service_addresses(),
             HBNDeviceNames::hbn_23(),
             None,
+            &[],
         )
         .await?;
         assert!(
@@ -3323,6 +3441,7 @@ esac
             &test_service_addresses(),
             HBNDeviceNames::hbn_23(),
             None,
+            &[],
         )
         .await?;
         assert!(
@@ -3381,6 +3500,7 @@ esac
             &test_service_addresses(),
             HBNDeviceNames::hbn_23(),
             None,
+            &[],
         )
         .await?;
         assert!(
@@ -3450,6 +3570,7 @@ esac
                 &test_service_addresses(),
                 HBNDeviceNames::hbn_23(),
                 None,
+                &[],
             )
             .await?;
 
@@ -4124,6 +4245,7 @@ esac
             network_security_groups,
             is_dpu_os: true,
             fmds_gateway_vlan: None,
+            fmds_http_listeners: vec![],
         };
         let startup_yaml = nvue::build(conf)?;
 

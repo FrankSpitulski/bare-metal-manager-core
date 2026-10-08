@@ -33,7 +33,7 @@ pub struct Options {
     pub grpc_address: SocketAddr,
 
     /// REST listen address for tenant OS metadata queries.
-    #[clap(long, default_value = "0.0.0.0:80")]
+    #[clap(long, default_value = forge_dpu_fmds_shared::DEFAULT_REST_ADDRESS)]
     pub rest_address: SocketAddr,
 
     /// Optional additional REST listen address for compatibility. When

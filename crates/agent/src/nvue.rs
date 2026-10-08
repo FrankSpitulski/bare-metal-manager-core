@@ -17,7 +17,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::fs;
-use std::net::{IpAddr, Ipv6Addr};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::path::Path;
 
 use ::rpc::forge as rpc;
@@ -762,6 +762,23 @@ pub fn build(conf: NvueConfig) -> eyre::Result<String> {
     let params = TmplNvue {
         HasBgpLeafSessionPassword: conf.bgp_leaf_session_password.is_some(),
         BgpLeafSessionPassword: conf.bgp_leaf_session_password.unwrap_or_default(),
+        FmdsHttpPorts: {
+            let mut ports = if conf.use_admin_network || conf.is_dpu_os {
+                vec![]
+            } else {
+                conf.fmds_http_listeners
+                    .iter()
+                    .filter(|address| {
+                        address.ip().is_unspecified()
+                            || address.ip() == IpAddr::V4(Ipv4Addr::new(169, 254, 169, 254))
+                    })
+                    .map(std::net::SocketAddr::port)
+                    .collect::<Vec<_>>()
+            };
+            ports.sort_unstable();
+            ports.dedup();
+            ports
+        },
         UseAdminNetwork: conf.use_admin_network,
         LoopbackIP: conf.loopback_ip.to_string(),
         HasLoopbackIpv6: conf.loopback_ip_v6.is_some(),
@@ -1308,6 +1325,8 @@ pub struct NvueConfig {
     /// In containerized mode, the vlan ID of the pf0hpf-facing SVI that should
     /// carry 169.254.169.253/30 as the FMDS gateway address.
     pub fmds_gateway_vlan: Option<u16>,
+    /// External FMDS HTTP listeners; only metadata-reachable binds create ACL exceptions.
+    pub fmds_http_listeners: Vec<std::net::SocketAddr>,
     pub vpc_virtualization_type: VpcVirtualizationType,
     pub use_admin_network: bool,
     pub tenancy_enabled: bool,
@@ -1541,6 +1560,7 @@ pub struct PortConfig {
 #[allow(non_snake_case)]
 #[derive(Clone, Gtmpl, Debug)]
 struct TmplNvue {
+    FmdsHttpPorts: Vec<u16>,
     UseAdminNetwork: bool, // akak service network
     HasSiteGlobalVpcVni: bool,
     SiteGlobalVpcVni: u32,
@@ -2056,6 +2076,7 @@ mod tests {
             is_fnn: false,
             is_dpu_os: true,
             fmds_gateway_vlan: None,
+            fmds_http_listeners: vec![],
             vpc_virtualization_type: VpcVirtualizationType::EthernetVirtualizer,
             use_admin_network: false,
             tenancy_enabled: true,
@@ -3170,6 +3191,108 @@ type: ipv6
             routing_profile: None,
             interface_routing_profile: None,
             ipv6_port_config: None,
+        }
+    }
+
+    #[test]
+    fn external_fmds_acl_is_absent_without_tenant_reachable_listeners() {
+        for (is_dpu_os, use_admin_network, listeners) in [
+            (false, false, vec![]),
+            (false, false, vec!["127.0.0.1:80", "[::1]:7777"]),
+            (true, false, vec!["0.0.0.0:80"]),
+            (false, true, vec!["0.0.0.0:80"]),
+        ] {
+            let mut conf = minimal_nvue_config();
+            conf.is_dpu_os = is_dpu_os;
+            conf.use_admin_network = use_admin_network;
+            conf.fmds_http_listeners = listeners
+                .iter()
+                .map(|address| address.parse().unwrap())
+                .collect();
+            conf.ct_port_configs = vec![phy_port_config(274)];
+            assert!(!build(conf).unwrap().contains("p0003_fmds_http"));
+        }
+    }
+
+    #[test]
+    fn fmds_http_acl_matches_configured_ports_on_physical_interface() {
+        for virtualization_type in [
+            VpcVirtualizationType::EthernetVirtualizer,
+            VpcVirtualizationType::Fnn,
+        ] {
+            let mut conf = minimal_nvue_config();
+            conf.is_dpu_os = false;
+            conf.vpc_virtualization_type = virtualization_type;
+            if virtualization_type == VpcVirtualizationType::Fnn {
+                conf.is_fnn = true;
+                conf.ct_routing_profile = Some(minimal_fnn_routing_profile());
+            }
+            conf.fmds_http_listeners = [
+                "0.0.0.0:8080",
+                "169.254.169.254:7777",
+                "0.0.0.0:8080",
+                "127.0.0.1:8888",
+                "10.244.0.2:50052",
+            ]
+            .iter()
+            .map(|address| address.parse().unwrap())
+            .collect();
+            conf.ct_port_configs = vec![phy_port_config(274)];
+            conf.stateful_acls_enabled = true;
+            conf.network_security_groups = vec![NetworkSecurityGroup {
+                id: "deny-all".into(),
+                stateful_egress: true,
+                rules: vec![],
+            }];
+            conf.ct_port_configs[0].network_security_group_id = Some("deny-all".into());
+            let mut vf = phy_port_config(275);
+            vf.interface_name = "pf0vf0_if".into();
+            vf.is_phy = false;
+            vf.host_ip = "10.0.2.2".into();
+            vf.host_route = "10.0.2.0/24".into();
+            vf.gateway_cidr = "10.0.2.1/24".into();
+            vf.svi_ip = Some("10.0.2.1".into());
+            vf.network_security_group_id = Some("deny-all".into());
+            conf.ct_port_configs.push(vf);
+            let output = build(conf).unwrap();
+            let yaml: serde_yaml::Value = serde_yaml::from_str(&output).unwrap();
+            let set = &yaml[1]["set"];
+            let acl = &set["acl"]["p0003_fmds_http"];
+            assert_eq!(acl["type"], "ipv4");
+            let rules = acl["rule"].as_mapping().unwrap();
+            assert_eq!(rules.len(), 2);
+            for (index, port) in [7777, 8080].into_iter().enumerate() {
+                let request = &acl["rule"][format!("10{index}")];
+                assert_eq!(
+                    request["action"]["permit"],
+                    serde_yaml::Value::Mapping(Default::default())
+                );
+                assert_eq!(request["match"]["ip"]["dest-ip"], "169.254.169.254/32");
+                assert_eq!(request["match"]["ip"]["protocol"], "tcp");
+                assert!(request["match"]["ip"]["dest-port"][port.to_string()].is_mapping());
+                assert!(request["match"]["conntrack"].is_null());
+            }
+            let interfaces = &set["interface"];
+
+            let attached = interfaces["pf0hpf_if"]["acl"].as_mapping().unwrap();
+            let names = attached
+                .keys()
+                .map(|name| name.as_str().unwrap())
+                .collect::<Vec<_>>();
+            let metadata_position = names
+                .iter()
+                .position(|name| *name == "p0003_fmds_http")
+                .unwrap();
+            let tenant_position = names
+                .iter()
+                .position(|name| name.starts_with("p0005_"))
+                .unwrap();
+            assert!(metadata_position < tenant_position);
+            assert!(interfaces["pf0hpf_if"]["acl"]["p0003_fmds_http"]["inbound"].is_mapping());
+            assert!(interfaces["pf0hpf_if"]["acl"]["p0003_fmds_http"]["outbound"].is_mapping());
+            assert!(interfaces["pf0vf0_if"]["acl"]["p0003_fmds_http"].is_null());
+            assert!(!format!("{acl:?}").contains("8888"));
+            assert!(!format!("{acl:?}").contains("50052"));
         }
     }
 

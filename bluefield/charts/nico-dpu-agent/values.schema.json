@@ -5,6 +5,13 @@
   "type": "object",
   "required": ["serviceDaemonSet", "lldpSidecar"],
   "properties": {
+    "fmds": {
+      "type": "object",
+      "properties": {
+        "restAddress": { "type": ["string", "null"] },
+        "compatibilityRestAddress": { "type": ["string", "null"] }
+      }
+    },
     "serviceDaemonSet": {
       "type": "object",
       "description": "Configuration for the service DaemonSet",

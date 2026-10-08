@@ -18,3 +18,6 @@
 //! Shared **carbide-agent** / **carbide-fmds** machine-identity and IMDS identity surface.
 
 pub mod machine_identity;
+
+/// Default standalone FMDS HTTP bind, shared with deployment ACL configuration.
+pub const DEFAULT_REST_ADDRESS: &str = "0.0.0.0:80";

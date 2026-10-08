@@ -74,6 +74,10 @@ dhcp_server:
   # Will be updated in dpf_services.rs
   service_name: ""
 fmds:
+  # NICo derives these from the resolved FMDS service values. Omitted listeners
+  # do not create metadata ACL exceptions when deploying this chart directly.
+  restAddress: null
+  compatibilityRestAddress: null
   # Will be updated in dpf_services.rs
   service_name: ""
   # Empty keeps NICo's Forge signer.

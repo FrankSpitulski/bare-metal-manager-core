@@ -152,6 +152,12 @@ spec:
             - "--agent-platform-type=containerized"
             - "--dhcp-grpc-server=http://carbide-dpf-cluster-{{ .Values.dhcp_server.service_name }}.dpf-operator-system.svc.cluster.local:10079"
             - "--fmds-grpc-server=http://carbide-dpf-cluster-{{ .Values.fmds.service_name }}.dpf-operator-system.svc.cluster.local:50052"
+            {{- with .Values.fmds.restAddress }}
+            - "--fmds-rest-address={{ . }}"
+            {{- end }}
+            {{- with .Values.fmds.compatibilityRestAddress }}
+            - "--fmds-compatibility-rest-address={{ . }}"
+            {{- end }}
             {{- if not (empty .Values.dhcp_server.interface_prepend) }}
             - "--dhcp-server-interface-prepend={{ .Values.dhcp_server.interface_prepend }}"
             {{ end }}
