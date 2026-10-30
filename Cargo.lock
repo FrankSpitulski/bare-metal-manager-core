@@ -1058,7 +1058,7 @@ dependencies = [
  "nix 0.31.3",
  "nonzero_ext",
  "nvue-client",
- "opentelemetry 0.32.0",
+ "opentelemetry",
  "opentelemetry-prometheus",
  "opentelemetry-semantic-conventions",
  "opentelemetry_sdk",
@@ -1122,7 +1122,7 @@ dependencies = [
  "ipnetwork",
  "logfmt",
  "metrics-endpoint",
- "opentelemetry 0.32.0",
+ "opentelemetry",
  "opentelemetry-otlp",
  "opentelemetry-prometheus",
  "opentelemetry-proto",
@@ -1141,7 +1141,7 @@ dependencies = [
  "trace-propagation",
  "tracing",
  "tracing-log",
- "tracing-opentelemetry 0.33.0",
+ "tracing-opentelemetry",
  "tracing-subscriber",
  "vaultrs",
 ]
@@ -1240,7 +1240,7 @@ dependencies = [
  "num_cpus",
  "nv-redfish",
  "nv-redfish-dispatcher",
- "opentelemetry 0.32.0",
+ "opentelemetry",
  "opentelemetry_sdk",
  "p256 0.14.0",
  "pkcs1 0.7.5",
@@ -1284,7 +1284,7 @@ dependencies = [
  "tower-http 0.7.0",
  "trace-propagation",
  "tracing",
- "tracing-opentelemetry 0.33.0",
+ "tracing-opentelemetry",
  "tracing-subscriber",
  "tss-esapi",
  "url",
@@ -1419,7 +1419,7 @@ dependencies = [
  "mac_address",
  "metrics-endpoint",
  "mqttea",
- "opentelemetry 0.32.0",
+ "opentelemetry",
  "reqwest 0.13.4",
  "serde_json",
  "serial_test",
@@ -1657,7 +1657,7 @@ dependencies = [
  "metrics-endpoint",
  "moka",
  "nv-redfish-dispatcher",
- "opentelemetry 0.32.0",
+ "opentelemetry",
  "opentelemetry-otlp",
  "opentelemetry-prometheus",
  "opentelemetry-semantic-conventions",
@@ -1683,7 +1683,7 @@ dependencies = [
  "trace-propagation",
  "tracing",
  "tracing-log",
- "tracing-opentelemetry 0.33.0",
+ "tracing-opentelemetry",
  "tracing-subscriber",
  "url",
  "urlencoding",
@@ -1768,7 +1768,7 @@ dependencies = [
  "mac_address",
  "metrics-endpoint",
  "once_cell",
- "opentelemetry 0.32.0",
+ "opentelemetry",
  "prometheus",
  "prost",
  "serde_json",
@@ -1858,7 +1858,7 @@ dependencies = [
  "logfmt",
  "lru",
  "metrics-endpoint",
- "opentelemetry 0.32.0",
+ "opentelemetry",
  "opentelemetry-otlp",
  "opentelemetry_sdk",
  "prost",
@@ -1869,7 +1869,7 @@ dependencies = [
  "toml 1.1.2+spec-1.1.0",
  "tonic",
  "tracing",
- "tracing-opentelemetry 0.33.0",
+ "tracing-opentelemetry",
  "tracing-subscriber",
 ]
 
@@ -1890,7 +1890,7 @@ dependencies = [
  "eyre",
  "mac_address",
  "mqttea",
- "opentelemetry 0.32.0",
+ "opentelemetry",
  "prost",
  "serde",
  "sqlx",
@@ -1921,7 +1921,7 @@ dependencies = [
  "http",
  "mac_address",
  "mqttea",
- "opentelemetry 0.32.0",
+ "opentelemetry",
  "rand 0.10.1",
  "serde",
  "serde_json",
@@ -2074,7 +2074,7 @@ dependencies = [
  "metrics-endpoint",
  "moka",
  "mqttea",
- "opentelemetry 0.32.0",
+ "opentelemetry",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
@@ -2167,7 +2167,7 @@ dependencies = [
  "metrics-endpoint",
  "netlink-packet-route 0.19.0",
  "nonzero_ext",
- "opentelemetry 0.32.0",
+ "opentelemetry",
  "opentelemetry-prometheus",
  "opentelemetry-semantic-conventions",
  "opentelemetry_sdk",
@@ -2220,7 +2220,7 @@ dependencies = [
  "mac_address",
  "metrics-endpoint",
  "nv-redfish",
- "opentelemetry 0.32.0",
+ "opentelemetry",
  "opentelemetry-proto",
  "prometheus",
  "prost",
@@ -2259,7 +2259,7 @@ dependencies = [
  "carbide-api-model",
  "carbide-health-report",
  "carbide-utils",
- "opentelemetry 0.32.0",
+ "opentelemetry",
  "prometheus",
 ]
 
@@ -2325,7 +2325,7 @@ dependencies = [
  "hickory-resolver",
  "hyper",
  "hyper-util",
- "opentelemetry 0.32.0",
+ "opentelemetry",
  "socket2",
  "tokio",
  "tokio-socks",
@@ -2363,7 +2363,7 @@ dependencies = [
  "hyper-rustls",
  "hyper-timeout",
  "hyper-util",
- "opentelemetry 0.32.0",
+ "opentelemetry",
  "rand 0.10.1",
  "rustls",
  "rustls-pemfile",
@@ -2408,14 +2408,14 @@ dependencies = [
  "dashmap",
  "futures-util",
  "logfmt",
- "opentelemetry 0.32.0",
+ "opentelemetry",
  "opentelemetry-otlp",
  "opentelemetry-prometheus",
  "opentelemetry_sdk",
  "prometheus",
  "tokio",
  "tracing",
- "tracing-opentelemetry 0.33.0",
+ "tracing-opentelemetry",
  "tracing-subscriber",
 ]
 
@@ -2677,7 +2677,7 @@ dependencies = [
  "libredfish",
  "mac_address",
  "mockall",
- "opentelemetry 0.32.0",
+ "opentelemetry",
  "prometheus",
  "prost",
  "prost-types",
@@ -2821,7 +2821,7 @@ dependencies = [
  "carbide-instrument",
  "carbide-test-support",
  "mqttea",
- "opentelemetry 0.32.0",
+ "opentelemetry",
  "tokio",
  "tokio-util",
  "tracing",
@@ -2858,7 +2858,7 @@ dependencies = [
  "config-version",
  "eyre",
  "ipnetwork",
- "opentelemetry 0.32.0",
+ "opentelemetry",
  "sqlx",
  "state-controller",
  "tracing",
@@ -2907,7 +2907,7 @@ dependencies = [
  "libnmxc",
  "libnmxm",
  "librms",
- "opentelemetry 0.32.0",
+ "opentelemetry",
  "rand 0.10.1",
  "rcgen",
  "rustls",
@@ -2953,7 +2953,7 @@ dependencies = [
  "eyre",
  "librms",
  "mac_address",
- "opentelemetry 0.32.0",
+ "opentelemetry",
  "serde_json",
  "sqlx",
  "state-controller",
@@ -2991,7 +2991,7 @@ dependencies = [
  "libredfish",
  "librms",
  "mac_address",
- "opentelemetry 0.32.0",
+ "opentelemetry",
  "prometheus-text-parser",
  "sqlx",
  "tempfile",
@@ -3054,7 +3054,7 @@ dependencies = [
  "metrics-endpoint",
  "metrics-exporter-prometheus",
  "mime",
- "opentelemetry 0.32.0",
+ "opentelemetry",
  "opentelemetry_sdk",
  "pin-project-lite",
  "prometheus",
@@ -3072,7 +3072,7 @@ dependencies = [
  "tower-service",
  "trace-propagation",
  "tracing",
- "tracing-opentelemetry 0.33.0",
+ "tracing-opentelemetry",
  "tracing-subscriber",
  "uuid",
 ]
@@ -3096,7 +3096,7 @@ dependencies = [
  "librms",
  "mac_address",
  "mqttea",
- "opentelemetry 0.32.0",
+ "opentelemetry",
  "serde",
  "serde_json",
  "sqlx",
@@ -3129,7 +3129,7 @@ dependencies = [
  "duration-str",
  "eyre",
  "mac_address",
- "opentelemetry 0.32.0",
+ "opentelemetry",
  "reqwest 0.13.4",
  "serde",
  "serde_json",
@@ -3194,7 +3194,7 @@ dependencies = [
  "ipnetwork",
  "libc",
  "nix 0.31.3",
- "opentelemetry 0.32.0",
+ "opentelemetry",
  "opentelemetry_sdk",
  "prost",
  "rcgen",
@@ -3210,7 +3210,7 @@ dependencies = [
  "tower",
  "trace-propagation",
  "tracing",
- "tracing-opentelemetry 0.33.0",
+ "tracing-opentelemetry",
  "tracing-subscriber",
  "url",
  "uuid",
@@ -3435,7 +3435,7 @@ dependencies = [
  "mac_address",
  "mockito",
  "notify",
- "opentelemetry 0.32.0",
+ "opentelemetry",
  "p256 0.14.0",
  "rand 0.10.1",
  "rand_core 0.10.1",
@@ -3488,7 +3488,7 @@ dependencies = [
  "libredfish",
  "mac_address",
  "nv-redfish",
- "opentelemetry 0.32.0",
+ "opentelemetry",
  "opentelemetry-prometheus",
  "opentelemetry_sdk",
  "prometheus",
@@ -3524,7 +3524,7 @@ dependencies = [
  "eyre",
  "logfmt",
  "metrics-endpoint",
- "opentelemetry 0.32.0",
+ "opentelemetry",
  "prometheus",
  "regex",
  "reqwest 0.13.4",
@@ -3569,7 +3569,7 @@ dependencies = [
  "itertools 0.14.0",
  "libredfish",
  "nras",
- "opentelemetry 0.32.0",
+ "opentelemetry",
  "sqlx",
  "state-controller",
  "tracing",
@@ -3629,7 +3629,7 @@ dependencies = [
  "lazy_static",
  "libc",
  "nix 0.31.3",
- "opentelemetry 0.32.0",
+ "opentelemetry",
  "opentelemetry-prometheus",
  "opentelemetry_sdk",
  "prometheus",
@@ -3723,7 +3723,7 @@ dependencies = [
  "libredfish",
  "librms",
  "mac_address",
- "opentelemetry 0.32.0",
+ "opentelemetry",
  "serde_json",
  "sqlx",
  "state-controller",
@@ -3805,7 +3805,7 @@ dependencies = [
  "figment",
  "futures",
  "metrics-endpoint",
- "opentelemetry 0.32.0",
+ "opentelemetry",
  "rcgen",
  "reqwest 0.13.4",
  "rustls",
@@ -3834,7 +3834,7 @@ dependencies = [
  "clap",
  "ipnetwork",
  "mac_address",
- "opentelemetry 0.32.0",
+ "opentelemetry",
  "opentelemetry-prometheus",
  "opentelemetry_sdk",
  "prometheus",
@@ -7339,11 +7339,11 @@ version = "0.1.0"
 dependencies = [
  "chrono",
  "criterion",
- "opentelemetry 0.32.0",
+ "opentelemetry",
  "opentelemetry_sdk",
  "trace-propagation",
  "tracing",
- "tracing-opentelemetry 0.33.0",
+ "tracing-opentelemetry",
  "tracing-subscriber",
 ]
 
@@ -7483,7 +7483,7 @@ dependencies = [
  "http-body-util",
  "hyper",
  "hyper-util",
- "opentelemetry 0.32.0",
+ "opentelemetry",
  "opentelemetry-prometheus",
  "opentelemetry-semantic-conventions",
  "opentelemetry_sdk",
@@ -7694,7 +7694,7 @@ dependencies = [
  "chrono",
  "clap",
  "oauth2",
- "opentelemetry 0.32.0",
+ "opentelemetry",
  "opentelemetry-prometheus",
  "opentelemetry_sdk",
  "prometheus",
@@ -7916,7 +7916,7 @@ dependencies = [
  "eyre",
  "logfmt",
  "metrics-endpoint",
- "opentelemetry 0.32.0",
+ "opentelemetry",
  "prometheus",
  "sqlx",
  "tokio",
@@ -8400,20 +8400,6 @@ checksum = "7c87def4c32ab89d880effc9e097653c8da5d6ef28e6b539d313baaacfbafcbe"
 
 [[package]]
 name = "opentelemetry"
-version = "0.31.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b84bcd6ae87133e903af7ef497404dda70c60d0ea14895fc8a5e6722754fc2a0"
-dependencies = [
- "futures-core",
- "futures-sink",
- "js-sys",
- "pin-project-lite",
- "thiserror 2.0.18",
- "tracing",
-]
-
-[[package]]
-name = "opentelemetry"
 version = "0.32.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b0142c63252a9e054e68a4c61a5778f7b14f576274d593f8ce883d191a099682"
@@ -8435,7 +8421,7 @@ dependencies = [
  "async-trait",
  "bytes",
  "http",
- "opentelemetry 0.32.0",
+ "opentelemetry",
  "reqwest 0.13.4",
 ]
 
@@ -8446,7 +8432,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9966929966d17620d7c316c643ba62631826e10021409357772d5eea84f62c35"
 dependencies = [
  "http",
- "opentelemetry 0.32.0",
+ "opentelemetry",
  "opentelemetry-http",
  "opentelemetry-proto",
  "opentelemetry_sdk",
@@ -8465,7 +8451,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2c0359983e7f79cf33c9abd89e5d7ddf67c46c419d0148598022d70e70c01aba"
 dependencies = [
  "once_cell",
- "opentelemetry 0.32.0",
+ "opentelemetry",
  "opentelemetry_sdk",
  "prometheus",
  "tracing",
@@ -8477,7 +8463,7 @@ version = "0.32.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "56d658ba1faf63f7b9c492cfbe6e0ec365440a16132d3270c1065f7b33f1b638"
 dependencies = [
- "opentelemetry 0.32.0",
+ "opentelemetry",
  "opentelemetry_sdk",
  "prost",
  "tonic",
@@ -8499,7 +8485,7 @@ dependencies = [
  "futures-channel",
  "futures-executor",
  "futures-util",
- "opentelemetry 0.32.0",
+ "opentelemetry",
  "percent-encoding",
  "portable-atomic",
  "rand 0.9.4",
@@ -9909,11 +9895,11 @@ dependencies = [
  "getrandom 0.2.17",
  "http",
  "matchit",
- "opentelemetry 0.31.0",
+ "opentelemetry",
  "reqwest 0.13.4",
  "reqwest-middleware",
  "tracing",
- "tracing-opentelemetry 0.32.1",
+ "tracing-opentelemetry",
 ]
 
 [[package]]
@@ -11281,7 +11267,7 @@ dependencies = [
 name = "sqlx-query-tracing"
 version = "0.0.1"
 dependencies = [
- "opentelemetry 0.32.0",
+ "opentelemetry",
  "tracing",
  "tracing-subscriber",
 ]
@@ -11407,7 +11393,7 @@ dependencies = [
  "eyre",
  "futures",
  "futures-util",
- "opentelemetry 0.32.0",
+ "opentelemetry",
  "prometheus",
  "rand 0.10.1",
  "serde",
@@ -12254,13 +12240,13 @@ name = "trace-propagation"
 version = "0.0.0"
 dependencies = [
  "http",
- "opentelemetry 0.32.0",
+ "opentelemetry",
  "opentelemetry-http",
  "opentelemetry_sdk",
  "tokio",
  "tower",
  "tracing",
- "tracing-opentelemetry 0.33.0",
+ "tracing-opentelemetry",
  "tracing-subscriber",
 ]
 
@@ -12320,28 +12306,12 @@ dependencies = [
 
 [[package]]
 name = "tracing-opentelemetry"
-version = "0.32.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1ac28f2d093c6c477eaa76b23525478f38de514fa9aeb1285738d4b97a9552fc"
-dependencies = [
- "js-sys",
- "opentelemetry 0.31.0",
- "smallvec",
- "tracing",
- "tracing-core",
- "tracing-log",
- "tracing-subscriber",
- "web-time",
-]
-
-[[package]]
-name = "tracing-opentelemetry"
 version = "0.33.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "adbc64cba7137545b8044cb1fe9814f7aacf3c6b5f9b45be8bb5db538befdb26"
 dependencies = [
  "js-sys",
- "opentelemetry 0.32.0",
+ "opentelemetry",
  "smallvec",
  "tracing",
  "tracing-core",
